@@ -13,16 +13,66 @@ export type ResolvedMedia = Pick<
   "id" | "url" | "alt" | "width" | "height" | "blurhash" | "focalX" | "focalY" | "mime"
 >;
 
+/** Contexto del visitante para paywall + personalización (F8b). */
+export type ViewerContext = {
+  /** Sesión de miembro activa (cookie csm.member). */
+  isAuthenticated: boolean;
+  /** Email del miembro logueado. */
+  email: string | null;
+  /** Membresía activa (status active/trialing/past_due + currentPeriodEnd vigente). */
+  isActive: boolean;
+  /** Tier asignado (UUID) o null. */
+  tierId: string | null;
+  /** Geo + dispositivo + UTM derivados de la request. */
+  country: string | null;
+  device: "mobile" | "tablet" | "desktop" | "bot";
+  utm: { source?: string; medium?: string; campaign?: string };
+  /** Hora local del visitante 0-23 si está disponible (cookie csm_tz). */
+  hour: number | null;
+};
+
 /** Contexto de render: maps de media y símbolos resueltos pre-render. */
 export type RenderContext = {
   workspaceId: string;
   mediaMap: Map<string, ResolvedMedia>;
   symbolMap: Map<string, { id: string; name: string; layout: BlockNode[] }>;
+  /** Visitante (paywall + personalización). Optional para callers de admin/preview. */
+  viewer?: ViewerContext;
+  /** Si true, ignoramos paywall + audience (preview en admin/builder). */
+  bypassGates?: boolean;
 };
 
 export type BlockKind = string;
 
 export type Breakpoint = "mobile" | "tablet" | "desktop";
+
+/**
+ * Regla de audiencia embebida por bloque (F8b — personalización SSR).
+ * Si está presente, el render evalúa la regla con el contexto de la request
+ * (geo, user-agent, cookies, member tier) antes de incluir el bloque.
+ *
+ * Todas las claves son opcionales y se evalúan con AND. `mode: "show"` (default)
+ * incluye el bloque solo si matchea; `mode: "hide"` lo oculta si matchea.
+ */
+export type AudienceRule = {
+  mode?: "show" | "hide";
+  /** ISO-3166-1 alpha-2 en mayúsculas (ES, US, MX...). */
+  countries?: string[];
+  /** Devices permitidos. */
+  devices?: Array<"mobile" | "tablet" | "desktop" | "bot">;
+  /** UTM source(s) que matchean (substring case-insensitive). */
+  utmSource?: string[];
+  /** UTM medium(s). */
+  utmMedium?: string[];
+  /** UTM campaign(s). */
+  utmCampaign?: string[];
+  /** Estado del miembro: "guest" = sin sesión, "member" = cualquier sesión, "active" = membresía activa. */
+  memberState?: Array<"guest" | "member" | "active">;
+  /** IDs de tier permitidos (UUIDs). Vacío = cualquier tier. */
+  memberTierIds?: string[];
+  /** Hora local del visitante (0-23) — solo lado server con cookie de timezone. */
+  hourOfDay?: { from: number; to: number };
+};
 
 export type BlockNode = {
   id: string;
@@ -31,6 +81,8 @@ export type BlockNode = {
   children?: BlockNode[];
   /** Por breakpoint, oculto/visible. Default: visible en todos. */
   hidden?: Partial<Record<Breakpoint, boolean>>;
+  /** Regla de audiencia opcional — si no matchea en SSR, el bloque se omite. */
+  audience?: AudienceRule;
 };
 
 export const EMPTY_LAYOUT: BlockNode[] = [];
@@ -62,7 +114,16 @@ function normalizeNode(input: unknown): BlockNode | null {
     obj.hidden && typeof obj.hidden === "object"
       ? (obj.hidden as Partial<Record<Breakpoint, boolean>>)
       : undefined;
-  return { id, kind, props, ...(children ? { children } : {}), ...(hidden ? { hidden } : {}) };
+  const audience =
+    obj.audience && typeof obj.audience === "object" ? (obj.audience as AudienceRule) : undefined;
+  return {
+    id,
+    kind,
+    props,
+    ...(children ? { children } : {}),
+    ...(hidden ? { hidden } : {}),
+    ...(audience ? { audience } : {}),
+  };
 }
 
 /** Recorre el árbol y devuelve todos los nodos en orden DFS */
@@ -188,5 +249,6 @@ export function cloneNodeWithNewIds(node: BlockNode): BlockNode {
     props: { ...node.props },
     ...(node.children ? { children: node.children.map(cloneNodeWithNewIds) } : {}),
     ...(node.hidden ? { hidden: { ...node.hidden } } : {}),
+    ...(node.audience ? { audience: { ...node.audience } } : {}),
   };
 }

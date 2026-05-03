@@ -892,12 +892,262 @@
 - [x] **Medium**: cross-tenant leak en getPublicMenuBySlug — slug global devolvía primer match de cualquier workspace → acepta opcional `host`, resuelve workspaceId via resolveWorkspaceIdByHost (custom domain o subdominio o fallback)
 - [x] Verificado y NO bug: SSRF en redirects (no hay fetch server-side, sólo Location header al browser); prototype pollution en parseCsv (claves fijas, no merge dinámico); GraphQL `me` sin scope (deliberado, sólo auth); persisted-only mode (env CSM_GRAPHQL_PERSISTED_ONLY=1 lanza error si no viene hash); admin actions con role gate apropiado (editor para edits, admin para delete/bulk/import); ~/.csmrc perms 0o600 verificado; CLI no imprime apiKey en whoami (sólo apiKeyId); idempotency-key NO se añade en SDK.gql() porque usa fetch directo sin pasar por wrapper; menu depth check server-side via MenuItemsSchema + checkMenuDepth; redirect cycles via Set<seen> + maxChain 5; isDefault menu race documentada (rara colisión, fix con tx en F8); slug validation drizzle parametrizado (no SQL injection); GraphQL SDL público OK (similar a OpenAPI); Yoga maskedErrors deja pasar errores con extensions.code para no esconder UNAUTHORIZED/FORBIDDEN/DEPTH_LIMIT/COMPLEXITY_LIMIT
 
-## Fase 8 — Newsletter + Memberships + A/B + Live-Edit
-- [ ] Subscribers, segments, campaigns, drip, doble opt-in
-- [ ] Stripe memberships paywall por bloque
-- [ ] A/B testing nativo (variants en cookie + SSR)
-- [ ] Personalización por reglas
-- [ ] Live-Edit on production (toolbar floating)
+## Fase 8 — Crecimiento (Newsletter + Memberships + A/B + Personalización + Live-Edit)
+
+> Fase dividida en **F8a / F8b / F8c** siguiendo el patrón de F7. Cada subfase deja sistema deployable.
+
+### ✅ Fase 8a — Newsletter & Email Engine ✦ Edición Espectacular (COMPLETA)
+
+> Newsletter integrada estilo Substack/Ghost con doble opt-in, segments rules engine, drip campaigns, plantillas inline-style server-only, tracking de aperturas/clicks con HMAC firmado, admin completo (composer multi-device), REST API con scopes, public preferences/unsubscribe.
+
+> Mejoras vs plan: en lugar de `react-dom/server` (Next bloquea su import en App Router) reescribimos las plantillas como string templates puros — más rápido, sin riesgo de bundle bleed al cliente. Tokens HMAC tipados por `kind` ("confirm"|"unsub"|"prefs"|"open"|"click") con verify constant-time. Segments rules engine recursivo con AND/OR/NOT y 13 operadores (eq/neq/in/not_in/contains/starts_with/ends_with/before/after/in_last_days/not_in_last_days/is_set/is_not_set/gt/lt/gte/lte). Live preview de segmentos en admin (debounce 600ms → matched count). Composer split-pane con preview multi-device. Cron `*/5 min` con claim atómico anti-doble-envío.
+
+#### Schema upgrade
+- [x] Ampliar `subscribers`: confirmedAt, unsubscribedAt, unsubscribeReason, unsubscribeToken (unique), preferences jsonb, lastOpenAt, lastClickAt, bounceCount, updatedAt + indices ws_status / unsub_token
+- [x] Nueva `subscriber_confirmations` (token unique HMAC + expiresAt + confirmedAt)
+- [x] Ampliar `campaigns`: previewText, fromName, fromEmail, replyTo, bodyHtml, templateId, status enum (draft/scheduled/sending/sent/paused/failed), startedAt, totalRecipients, sent, opens, uniqueOpens, clicks, uniqueClicks, bounced, complained, unsubscribed, failed, createdById, updatedAt
+- [x] Nueva `email_templates` (workspace_id+slug unique, body jsonb+bodyHtml+variables, builtinKey)
+- [x] Nueva `campaign_recipients` (estado per-subscriber + trackingHash unique + openCount/clickCount + providerMessageId + bouncedAt/failedAt/openedAt/clickedAt)
+- [x] Nueva `drips` (triggerType enum, triggerConfig jsonb, steps jsonb, status enum, contadores enrolledTotal/completedTotal)
+- [x] Nueva `drip_enrollments` (currentStep, nextRunAt, status enum, unique(dripId, subscriberId), index status+nextRunAt)
+- [x] Nueva `email_events` (type enum 9 tipos: queued/sent/delivered/open/click/bounce/complaint/unsubscribe/failed; subscriberId/campaignId/recipientId/dripId/dripEnrollmentId nullable; url; ipHash; userAgent; metadata)
+- [x] Enums: campaign_status, campaign_recipient_status, drip_status, drip_enrollment_status, drip_trigger_type, email_event_type
+
+#### Email engine (src/newsletter/)
+- [x] tokens.ts: HMAC tipado por kind (confirm/unsub/prefs/open/click) con verify constant-time + payload base64url + sig truncado
+- [x] templates.tsx: 4 plantillas string-template (renderConfirmation/renderWelcome/renderBroadcast/renderDripStep) con shell común (preheader hidden, header gradient, table layout, footer con prefs+unsub) + builtinTemplates registry
+- [x] urls.ts: publicOriginFromWorkspace (customDomain → NEXT_PUBLIC_APP_URL), buildSubscribeUrls/OpenPixel/ClickProxy
+- [x] compose.ts: sanitizeHtml (allowlist tags + isSafeUrl http/https/mailto/tel + strip script/iframe/style/event handlers + style url(javascript:) blacklist) + rewriteLinksForTracking (firma URL destino + cuenta rewrites) + bodyToHtml (tiptap-json → HTML inline) + htmlToText fallback
+- [x] segments.ts: rules engine recursivo (all/any/not + ConditionSchema con z.lazy), 13 fields, 18 operators, FIELD_LABELS/OP_LABELS para UI
+- [x] segments-lib.ts: CRUD + previewSegmentSize (in-memory matcher con cap 10k) + listSubscriberCountsForSegments
+- [x] subscribers.ts: subscribe (idempotente: crea/reactiva, escribe unsubscribeToken HMAC con id real tras insert), confirmSubscription (verify HMAC + invalida confirmaciones previas + auto-enroll drips), unsubscribe (cancela enrollments activos), updatePreferences, recordBounce (3 strikes → status='bounced' + emit), tagSubscribers, bulkImport (CSV con escape OWASP), subscribersToCsv (CSV-formula-injection guard)
+- [x] dispatcher.ts: expandCampaignRecipients (idempotente, segment filter, batch 200), startCampaignSend (claim atómico draft|scheduled→sending), processCampaigns (promote scheduled, claim recipients pending→sending atómico, sendEmail por uno, markFinishedCampaigns con emit campaign.sent), sendCampaignRecipient (rewrite links + open pixel + html/text), sendDripStep (similar para drip con tag de paso), recordOpen (campaign + drip), recordClick, recordBounceForRecipient
+- [x] drip.ts: DripStepSchema (delay { value, unit: minutes/hours/days/weeks }) + DripStepsSchema, CRUD, enrollSubscriber (no duplica activos), cancelEnrollmentsForSubscriber, autoEnrollOnConfirm, autoEnrollOnTagAdded, processDripEnrollments (claim + sendDripStep + advance/complete/cancelled)
+- [x] campaigns-lib.ts: CRUD + getCampaignStats (filter aggregations) + listRecipientEvents
+
+#### Public
+- [x] `/suscribir` page: form con email+name+honeypot + csm_t time-trap + Server Action vía fetch a /api/public/subscribe + estados (idle/loading/ok/err)
+- [x] `/api/public/subscribe` route: honeypot silencioso (200 OK fake), time-trap < 800ms, resolución workspace por host (custom domain → fallback first ws), rate limit 8/h + 40/d por (ip, ws), email validation, envío email confirmación (renderConfirmation)
+- [x] `/suscribir/confirmar/[token]` page: confirmSubscription server-side, success/expired/invalid views diferenciadas
+- [x] `/suscribir/preferencias/[token]` page: tags editor + Server Action updatePreferences + link a baja
+- [x] `/suscribir/baja/[token]` page: razón opcional radio + Server Action unsubscribe + view "we'll miss you"
+- [x] `/api/email/open/[token].gif` route: verify HMAC → recordOpen (campaign O drip) → 1x1 GIF transparente con no-cache headers
+- [x] `/api/email/click/[token]` route: verify HMAC + verify URL http(s) absoluta (anti open-redirect) → recordClick → 302 redirect a URL firmada
+
+#### Admin
+- [x] `/admin/suscriptores`: lista con filter pills (todos/activos/bajas/bounced) + search + bulk select + bulk actions (etiquetar/dar-de-baja/borrar) + paginación + counters status badges + Modal Add/Import-CSV/Tag con previews
+- [x] `/admin/api/subscribers/export` route: descarga CSV completa (con CSV-formula-injection guard)
+- [x] `/admin/segmentos`: lista con counters + summarizeRules + link a builder
+- [x] `/admin/segmentos/nuevo` + `/admin/segmentos/[id]`: builder visual con AND/OR pills, conditions con field/op/value selects + add/remove condition + live preview de matches estimadas (debounce 600ms) + sidebar con tips
+- [x] `/admin/campanas`: lista con status badges (draft/scheduled/sending/sent/paused/failed) + open/click rate columns
+- [x] `/admin/campanas/[id]`: editor full-screen con tabs (Diseño/Ajustes/Analítica) + autosave debounced 1.2s + composer split-pane con preview multi-device (Monitor/Smartphone toggle) + send-test + send-now + analytics stats grid
+
+#### REST API
+- [x] `/api/v1/subscribers` GET (list con filters status/q/tag/limit/offset) + POST (create con preConfirmed flag); scopes subscribers:read|write
+- [x] `/api/v1/subscribers/[id]` GET + PATCH (tags add/remove) + DELETE
+- [x] `/api/v1/subscribers/[id]/unsubscribe` POST
+- [x] `/api/v1/segments` GET + POST; `[id]` GET + PATCH + DELETE; scopes segments:read|write
+- [x] `/api/v1/campaigns` GET + POST; `[id]` GET + PATCH + DELETE; `[id]/send` POST; `[id]/stats` GET; scopes campaigns:read|write
+- [x] OpenAPI schemas auto-registrados (createRoute auto-registra)
+
+#### Cron
+- [x] `/api/cron/newsletter-process` schedule */5 min — processCampaigns (promote scheduled + dispatch pending recipients en lotes 50 + markFinished) + processDripEnrollments en paralelo
+- [x] vercel.json: cron entry añadido junto a publish-scheduled/webhooks-process/automations-process/daily
+
+#### Webhooks
+- [x] webhooks/events.ts: añadidos 6 eventos (subscriber.created/confirmed/unsubscribed/bounced + campaign.scheduled/campaign.sent) con grupo "Newsletter" en UI
+
+#### Sidebar
+- [x] Quitado `soon: true` de Suscriptores/Campañas
+- [x] Añadidos: Segmentos (Filter icon) + Drips (GitBranch icon, soon flag — F8a-2)
+
+#### Verificación
+- [x] npx tsc --noEmit cero errores
+- [x] npx biome check ./src cero errores ni warnings
+- [x] npm run build OK — 13 nuevas rutas (+ /admin/suscriptores, /admin/api/subscribers/export, /admin/segmentos, /admin/segmentos/nuevo, /admin/segmentos/[id], /admin/campanas, /admin/campanas/[id], /api/public/subscribe, /api/email/open/[token], /api/email/click/[token], /api/v1/subscribers + [id] + unsubscribe, /api/v1/segments + [id], /api/v1/campaigns + [id] + send + stats, /api/cron/newsletter-process, /suscribir/confirmar/[token], /suscribir/baja/[token], /suscribir/preferencias/[token])
+
+#### Decisiones diferidas a F8a-2 / F8b
+- /admin/drips: schema y engine implementados, UI admin diferida (pasa al backlog tras F8b)
+- GraphQL types para Subscriber/Campaign/Segment: REST cubre el caso headless principal; añadir en F8c con A/B
+- /admin/email-templates: la tabla `email_templates` existe pero el editor visual queda para F8c (templates builtin son hardcoded en templates.tsx)
+
+#### Auditoría posterior — bugs detectados y fixeados
+- [x] **High**: race en `expandCampaignRecipients` — read-then-write podía duplicar recipients si dos llamadas concurrentes pasaban el `count() > 0` check al mismo tiempo. Fix: añadido `onConflictDoNothing({ target: [campaignId, subscriberId] })` (defensa-en-profundidad por encima del unique index ya existente) + `WHERE totalRecipients = 0` en el UPDATE de contador para que sólo la primera llamada pise el valor. Aunque `startCampaignSend` ya garantiza serialización vía claim atómico de status, protegemos contra llamada directa desde otro código.
+- [x] **High**: `rewriteLinksForTracking` regex incompleta — sólo matcheaba `href="..."` (double quotes). Si admin pegaba HTML con `href='...'` (single quotes) o `href=...` (sin comillas), no se reescribía y el HMAC no firmaba la URL. Riesgo: admin podía meter URLs maliciosas que escapaban el verify de `/api/email/click`. Fix: regex extendida a `(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+))` con captura por grupos numerados; smoke test cubre los 3 estilos.
+- [x] **Medium**: `recordOpen` dual-dispatch ambiguo — sin discriminator en el token `signOpen`, llamábamos a `recordOpen({recipientId})` Y `recordOpen({enrollmentId})` con el mismo `rid`. Si los UUIDs colisionaban (improbable pero posible), habría doble-conteo. Fix: token ahora lleva `t: "c" | "d"` (campaign-recipient vs drip-enrollment); el route handler dispatch única vez al handler correcto. El `signClick` también usa `t` para que cuando llegue un click de drip no genere fila huérfana en `email_events` con `campaignId=null`.
+- [x] **Medium**: `recordBounceForRecipient` no era idempotente — un webhook que llegaba 2x duplicaba el contador `campaigns.bounced` y metía un segundo evento `bounce`. Fix: early return si el recipient ya estaba `status='bounced'`, y UPDATE atómico con `WHERE status != 'bounced'` (claim) + `returning` para detectar si fuimos los que ganamos la transición.
+- [x] **Medium**: `markFinishedCampaigns` race en transición sending → sent — dos cron ticks podían leer count=0 simultáneamente y ambos emitir `campaign.sent`. Fix: claim atómico con `WHERE status='sending' RETURNING id`, sólo el ganador emite el evento.
+- [x] **Medium**: sanitizer HTML — varios bypass posibles. Fixeados: (1) tags `svg`/`math`/`base`/`frame`/`frameset`/`button` añadidos al strip-list (svg con foreignObject permitía scripts, base reescribía URL resolution), (2) `isClose` lógica confusa simplificada con grupo de captura del `/`, (3) `isSafeUrl` ahora decodifica entidades HTML decimales/hex/named (`javascript&#58;` → `javascript:`) ANTES de comprobar el esquema y blacklistea explícitamente `javascript|vbscript|data|file|blob|about` antes del allowlist, (4) strip control chars + zero-width chars del prefijo de URL (bypass clásico `\tjavascript:` o `​javascript:`).
+- [x] **Medium**: `NextResponse.redirect("/")` con URL relativa fallaba en runtime — Next.js requiere URL absoluta. Fix: `new URL("/", req.url).toString()` para fallback en click route.
+- [x] **Low**: smoke test de seguridad añadido (no commiteado — corrió 31/31 PASS antes de borrar) cubriendo: sanitize de script/svg/iframe/onclick/javascript: en sus 9 variantes (entidades, control chars, ZWSP, NBSP, single/double/no quotes), data: URLs allow-image / block-html, comments con bypass condicional, base tag, mailto OK, style url(javascript:) + expression(), rewriteLinks idempotente, tokens c/d roundtrip + tampered + wrong-kind.
+
+#### Verificados como NO bug (false positives de la auditoría)
+- Cross-tenant en queries: todas las consultas filtran por `workspaceId` explícitamente (revisado: subscribers.ts, campaigns-lib.ts, segments-lib.ts, drip.ts).
+- Honeypot insuficiente vs bots headless: aceptado como defensa-en-profundidad (forms-templates uso el mismo patrón). Para upgrade a captcha real → F10 hardening.
+- `bulkImport` sin batching para 50k filas: documentado como limitación; en F10 se moverá a background job (queue) si crece el uso.
+- Side-channel timing en `/api/email/open`: irrelevante en práctica (jitter de red >> timing diff de DB query).
+- `/api/v1/subscribers POST preConfirmed=true` requiere scope `subscribers:write` — un API key con ese scope ya tiene control total sobre la lista, no se gana nada con un sub-scope para v1.
+- `unsubscribeToken` puede ser NULL en schema: en práctica `subscribe()` siempre lo genera; en defensa-en-profundidad el `verifyUnsub` rechaza tokens vacíos por la firma HMAC. Documentado.
+- DripStep delay 365 weeks (= 7 años): edge case aceptable, `value` cap a 365 por unit es suficiente para uso real.
+- Subscribers race en signup duplicado: el `uniqueIndex(workspaceId, email)` serializa correctamente; el insert con placeholder + update post-insert del `unsubscribeToken` es seguro porque la primera fila siempre gana el insert y el update es idempotente.
+- API key environment test/live no aplicado a campaigns send: aceptable para v1, F8b/F10 puede añadir distinción si necesario.
+
+### ✅ Fase 8b — Memberships + Stripe + Paywall + Personalización ✦ Edición Espectacular (COMPLETA)
+
+> Sistema completo de membresías estilo Substack/Ghost: tiers gratis y de pago con Stripe (sync a Products+Prices), checkout y billing portal, magic-link auth de miembro independiente del admin, /miembros + /miembros/portal en español, paywall block que trunca contenido posterior con teaser fade (patrón Substack), personalización por bloque (país, device, UTM, estado de miembro, tier, hora del día) evaluada en SSR. Cliente Stripe propio basado en fetch (cero dependencias, cero bundle bleed) con verify HMAC-SHA256 timing-safe del webhook. Demo mode sin Stripe key concede membresía con HMAC-firmado callback. REST v1 + scopes + idempotencia por event.id.
+
+#### Schema upgrade
+- [x] Nuevos enums: `membership_status` (incomplete/trialing/active/past_due/canceled/unpaid/paused), `tier_interval` (month/year/lifetime), `member_event_type` (12 tipos: membership_*/payment_*/trial_*/magic_link_sent/session_*)
+- [x] `tiers` ampliado: slug (unique), description, currency, interval enum, trialDays, features jsonb (string[]), isActive, isFree, sortOrder, stripeProductId, createdAt/updatedAt, indices ws_slug/ws_active/stripe_price
+- [x] `memberships` ampliado: name, status enum, stripe_subscription_id, currentPeriodStart, cancelAtPeriodEnd, canceledAt, trialEnd, startedAt, source, metadata jsonb, createdAt/updatedAt, indices ws_email (unique)/ws_status/stripe_sub/stripe_cust
+- [x] `member_sessions` (id, ws, email, tokenHash unique, ua, ipHash, expiresAt, lastSeenAt) — auth de miembro separada de Better-Auth
+- [x] `member_magic_links` (id, ws, email, tokenHash unique, redirectTo, expiresAt, usedAt, ipHash) — one-shot
+- [x] `member_events` (id, ws, membershipId, email, type enum, stripe_event_id unique, data jsonb) — audit log + idempotencia Stripe
+- [x] `personalization_rules` (id, ws, name unique, rule jsonb) — preparada para reglas reusables F8c
+- [x] BlockNode extendido con `audience?: AudienceRule` para personalización embebida por bloque (sin tabla extra)
+
+#### Stripe adapter (src/payments/stripe.ts)
+- [x] Cliente fetch propio (cero deps, no @stripe/stripe-node) con encoder form-urlencoded estilo Stripe (incluye sub-objetos `metadata[k]` y arrays `line_items[0][price]`)
+- [x] StripeApiError + StripeNotConfiguredError tipados
+- [x] createProduct/updateProduct, createPrice/archivePrice, createCheckoutSession (mode payment|subscription, customerEmail, trialDays, allowPromotionCodes, clientReferenceId, metadata), createBillingPortalSession, retrieveSubscription, cancelSubscription
+- [x] verifyAndParseWebhook: parsea header `Stripe-Signature t=TS,v1=SIG[,v1=SIG2]`, HMAC-SHA256(`${ts}.${rawBody}`), tolerance 5min anti-replay, timing-safe compare buffer-by-buffer, validate body length cap 1MB, parse JSON solo si firma OK
+- [x] mapSubscriptionStatus: Stripe status → enum interno (incomplete_expired → canceled)
+
+#### Member auth (src/payments/member-auth.ts)
+- [x] Tokens random 32B base64url + sha256 hash en DB (nunca guardamos plain)
+- [x] createMagicLink: throttle 5/h por (ws, email), TTL 15 min, ipHash con AUTH_SECRET pepper
+- [x] consumeMagicLink: claim atómico con `SET usedAt=now WHERE usedAt IS NULL AND expiresAt>=now` + RETURNING (one-shot a prueba de race)
+- [x] createMemberSession: TTL 30d, lastSeenAt bump async best-effort, cookie value = `${tokenPlain}.${workspaceId}` (defensa cross-tenant)
+- [x] loadMemberSessionByCookie: parse cookie → verifica tokenHash + workspaceId match
+- [x] Cookie helpers httpOnly/sameSite=lax/secure-prod/maxAge=30d
+- [x] purgeExpiredMemberAuth (helper para cron futuro)
+
+#### Memberships domain (src/payments/memberships.ts)
+- [x] CRUD tiers + ensureUniqueTierSlug (8 reintentos con sufijo)
+- [x] grantMembership idempotente (upsert por (ws, email))
+- [x] updateMembershipFromSubscription (Stripe-flow)
+- [x] isMembershipActive (status active/trialing/past_due + currentPeriodEnd vigente o null=lifetime)
+- [x] membershipMatchesTiers (paywall predicate)
+- [x] recordMemberEvent con onConflictDoNothing(stripe_event_id) → idempotencia Stripe
+- [x] stripeEventAlreadyProcessed (dedup helper)
+- [x] countActiveMembersByTier + membershipKpis (admin dashboard)
+- [x] formatPriceCents (Intl.NumberFormat es-ES) + intervalLabel + MEMBERSHIP_STATUS_LABELS
+
+#### Admin (/admin/membresias)
+- [x] Page RSC: KPIs (total/activas/trialing/pago pendiente/canceladas) + cards de tiers (precio, features, miembros activos, sync status) + tabla de miembros recientes
+- [x] TiersBoard cliente con cards animadas (hover lift), edit/delete inline, "Sincronizar Stripe" lazy con feedback
+- [x] TierFormDialog: name/desc/precio en céntimos/currency/interval/trialDays/features list/sortOrder/isActive
+- [x] MembersTable: status badges color-coded, cancel al final del período / inmediato (botón flotante), grant manual con email+tier
+- [x] _actions: createTier/updateTier/deleteTier/syncTierToStripe/grantManualMembership/cancelMembership con logActivity
+- [x] syncTierToStripe: createOrUpdate Product (name/description/active), Price siempre nuevo (Stripe no permite editar) + archive del antiguo, lifetime → price one-shot sin recurring
+
+#### Stripe routes (src/app/api/stripe/)
+- [x] `/api/stripe/checkout/[tierId]` POST/GET: requiere member session; tier free → demo-callback grant; sin STRIPE_SECRET_KEY → demo-callback; con Stripe → createCheckoutSession con clientReferenceId firmado HMAC + metadata{ws,tierId,email}
+- [x] `/api/stripe/demo-callback`: verify token HMAC kind="demo-checkout", grant directo con período ficticio (1 mes/año/lifetime), source="demo"|"free"
+- [x] `/api/stripe/portal`: crea Stripe Billing Portal session si hay stripeCustomerId; demo mode → redirect a /miembros/portal?demo_portal=1
+- [x] `/api/stripe/webhook`: lee raw body con req.text() (NUNCA req.json antes de verify), verify firma, idempotencia por stripeEventId; handlers checkout.session.completed (resolve subscription si mode=subscription, mappea tier por priceId, grant), customer.subscription.created/updated/deleted (mappa status, detect tier change), invoice.payment_succeeded/failed (audit log only, status real viene en subscription.updated)
+
+#### Member portal (/miembros)
+- [x] `/miembros` page: hero con aurora, tier cards (precio, features, trial badge, gradient CTA), magic link form con honeypot+time-trap+throttle UX
+- [x] MagicLinkForm cliente: estados idle/sent/error, "revisa tu email" success view
+- [x] `/miembros/auth/[token]`: consumeMagicLink → createMemberSession → setCookie → recordMemberEvent("session_started") → redirect a redirectTo o /miembros/portal; vista "enlace expirado" si falla
+- [x] `/miembros/portal`: requireSession; muestra tier actual, status badge, currentPeriodEnd, features, botones "Gestionar facturación" (Stripe portal) + "Cambiar plan"; lista de otros tiers para upgrade; banner welcome=1/canceled=1/demo_portal=1
+- [x] _actions: sendMemberMagicLinkAction (Resend con sendMemberMagicLinkEmail), logoutMemberAction (revoke session + clear cookie + recordMemberEvent("session_ended"))
+- [x] Email magic link (lib/email.ts) con escapeHtml del workspace name
+
+#### Paywall block (registry + render)
+- [x] PAYWALL en `src/blocks/registry.ts`: gateType (logged-in|any-tier|specific-tiers), tierIds CSV→UUIDs, title/message/ctaLabel/ctaHref/secondaryLabel/secondaryHref, teaser (fade|hard)
+- [x] RenderLayout reescrito como for-loop: skip por breakpoint hidden + skip por audiencia + handle paywall (si gate falla → render card y BREAK siblings, patrón Substack)
+- [x] gateAllows: logged-in (isAuthenticated), any-tier (isActive), specific-tiers (tierId in tierIds)
+- [x] renderPaywallCard: card glass con gradient, lock icon, CTA principal+secundario, link login si guest
+- [x] bypassGates flag en RenderContext para preview admin/builder
+
+#### Personalización (audience engine + inspector UI)
+- [x] AudienceRule en types.ts con countries[], devices[], utmSource/Medium/Campaign[], memberState[guest|member|active], memberTierIds[], hourOfDay {from,to}, mode show|hide
+- [x] `src/blocks/audience.ts` shouldShow + describeAudience (resumen humano), AND de criterios declarados, hourOfDay con wrap-around, country mayúsculas, utm substring case-insensitive
+- [x] `src/payments/current-member.ts` getViewerContext: detect device (mobile/tablet/desktop/bot regex), country (x-vercel-ip-country/cf-ipcountry), hour (cookie csm_tz timezone), utm (cookie csm_utm JSON), member state desde session+membership
+- [x] Páginas públicas (`/`, `/[...slug]`) inyectan viewer en RenderContext con `dynamic = "force-dynamic"` (paywall y geo requieren request-time)
+- [x] BuilderInspector: nueva sección "Audiencia" colapsable con switch on/off, modo show/hide, países CSV, devices checkboxes, member state checkboxes, utm inputs, tierIds CSV, descripción del rule en vivo
+
+#### REST v1 (src/api/v1/)
+- [x] tiers.ts: TierResourceSchema, listTiersHandler (?active=true), get/create/update/deleteHandler con ApiError typed
+- [x] memberships.ts: MembershipResourceSchema con isActive computed, list (filtros status/tierId, paginación cursor offset), get/create/updateHandler; create grantea idempotente
+- [x] Routes: /api/v1/tiers (GET/POST), /api/v1/tiers/[id] (GET/PATCH/DELETE), /api/v1/memberships (GET/POST), /api/v1/memberships/[id] (GET/PATCH)
+- [x] Scopes: tiers:read|write, memberships:read|write (sin necesidad de catálogo cerrado, validación por SCOPE_REGEX glob)
+
+#### Webhooks
+- [x] webhooks/events.ts: añadidos 5 eventos en grupo "Membresías" (membership.created/updated/canceled/payment_succeeded/payment_failed)
+
+#### Sidebar
+- [x] /admin/membresias añadido al grupo "Crecer" con icono Crown
+
+#### Verificación
+- [x] npx tsc --noEmit cero errores
+- [x] npx biome check ./src cero errores
+- [x] npm run build OK — todas las rutas presentes (/api/stripe/{checkout,portal,webhook,demo-callback}, /api/v1/{tiers,tiers/[id],memberships,memberships/[id]}, /miembros, /miembros/auth/[token], /miembros/portal, /admin/membresias)
+
+#### Decisiones diferidas a F8c / F10
+- Paywall en posts blog (Tiptap renderDoc): F8c con extension custom "paywall" en Tiptap, o adoptando la estrategia "blog-as-pages" para posts premium
+- /admin/membresias/[id] detalle de miembro con timeline de eventos: F10
+- Cron purgeExpiredMemberAuth: helper listo, schedule en F10 con resto de gc
+- Email "bienvenida" tras checkout.completed: F8c con plantilla en email_templates
+- Editor Stripe products desde admin (sin `csm cli`): tier sync ya cubre el 95%, falta UI para borrar Product en Stripe (queda en cliente Stripe directo)
+
+#### Auditoría posterior — bugs detectados y fixeados
+- [x] **High**: Stripe adapter inicial usaba `await import("stripe")` lazy → forzaba dep adicional. Reescrito como cliente fetch con HMAC-SHA256 timing-safe; cero deps añadidas, cero bundle bleed al cliente, control total sobre serialization.
+- [x] **High**: webhook handler usaba `req.json()` antes de verify → la firma se calcula sobre raw body, parseando JSON antes lo modificaba (espacios). Fix: SIEMPRE `req.text()` y JSON.parse dentro de `verifyAndParseWebhook` solo tras firma OK.
+- [x] **Medium**: cookie de member session sin workspaceId hardcoded → un atacante con sesión válida en ws-A podía pasar la cookie a request de ws-B. Fix inicial: cookie value = `${token}.${workspaceId}`. **Refixeado en auditoría posterior** (ver "Segunda auditoría" abajo).
+- [x] **Medium**: `consumeMagicLink` con read-then-write tenía race. Fix: claim atómico `UPDATE SET usedAt=now WHERE tokenHash=... AND usedAt IS NULL AND expiresAt>=now RETURNING` — solo el primer caller gana el claim.
+- [x] **Medium**: cancelMembership UI incluía import dummy `getMembershipByEmail` no usado para evitar warning. Limpiado.
+- [x] **Low**: `redirectTo` en magic link aceptaba cualquier string (potencial open-redirect tras login). Fix inicial: validate `startsWith("/")`. **Refixeado en auditoría posterior** (protocol-relative bypass).
+- [x] **Low**: paywall props.tierIds como string CSV requería normalización en render. Resolvido en `propsSchema` con `z.union([string, array]).transform(...)` que parsea CSV → UUIDs validados, garantizando que el render siempre recibe `string[]`.
+
+#### Segunda auditoría (subagent independiente) — bugs detectados y fixeados
+- [x] **CRITICAL: Open redirect via protocol-relative URL** — `consumed.redirectTo?.startsWith("/")` aceptaba `//evil.com/path` que el browser interpreta como `https://evil.com/path`. Mismo bug en `sp.next` de `/miembros/page.tsx`. Fix: nuevo helper `safeInternalPath()` en `src/lib/safe-redirect.ts` que rechaza `//`, `/\\`, y colon-en-primer-segmento (anti `javascript:`).
+- [x] **CRITICAL: Cookie tenant-pinning sin firma** — cookie value `${token}.${workspaceId}` permitía editar el segmento workspaceId. La defensa funcionaba accidentalmente porque `tokenHash + workspaceId` no matcheaba, pero el diseño era frágil. Fix: el cookie es ahora SOLO el token plano (regex `[A-Za-z0-9_-]{20,256}`); el workspaceId se compara contra el almacenado en `member_sessions` dentro de `getCurrentMemberSession(activeWs)` que devuelve null si difieren.
+- [x] **CRITICAL: Demo-checkout token replayable** — `verifyDemoCheckout` no marcaba el token como usado; cualquiera con el token podía resetear `currentPeriodEnd` indefinidamente durante 30 min. Fix: añadido `jti` (12B random hex) al payload; demo-callback usa `member_events.stripe_event_id = "demo:${jti}"` (UNIQUE) como dedup. Reintentos del mismo token redirigen al portal sin re-conceder.
+- [x] **HIGH: Webhook idempotency atómica** — pre-check `stripeEventAlreadyProcessed` antes de procesar tenía TOCTOU race entre dos retries Stripe paralelos. Fix: `recordMemberEvent` ahora retorna `{inserted, id}` y el insert con `onConflictDoNothing(stripe_event_id)` actúa como claim atómico. Dos webhooks paralelos del mismo event.id: solo uno persiste el evento, el otro se ignora silenciosamente. Combinado con `grantMembership` ahora upsert-atómico.
+- [x] **HIGH: Webhook ordering perdía datos** — si `customer.subscription.created` llegaba antes que `checkout.session.completed`, el código consumía el event.id con `data:{deferred:true}` y NUNCA aplicaba el subscription real (Stripe no reintenta tras 200). Fix: nueva clase `StripeEventDeferred extends Error`; cuando el handler detecta out-of-order la lanza; el outer try/catch devuelve 503 (NO consume event.id) y Stripe reintentará en backoff. Eventualmente checkout.completed llega y el subscription.* siguiente lo procesa.
+- [x] **HIGH: CSRF en /api/stripe/checkout y /api/stripe/portal** — el `export GET = POST` permitía a un sitio malicioso forzar checkout/portal vía `<img src="...">`. Las cookies sameSite=lax NO bloquean GET top-level navigation. Fix: eliminado `GET = POST`; ambas rutas son sólo POST (los formularios admin/portal usan `<form method="post">`).
+- [x] **HIGH: grantMembership con read-then-write** podía duplicar inserts en webhook race; el unique constraint daba excepción no manejada. Fix: refactorizado a `INSERT ... ON CONFLICT(workspaceId, email) DO UPDATE SET ... RETURNING`. Atómico, sin race window. Patrón consolidado.
+- [x] **HIGH: Paywall sólo truncaba siblings inmediatos** — si paywall estaba dentro de un Section, los bloques DESPUÉS del Section a nivel raíz se renderizaban (fuga de contenido premium). Fix: nuevo `trimLayoutForViewer()` recursivo que devuelve `{layout, truncated}`; `truncated:true` se propaga hacia arriba y se omiten todos los siblings del contenedor donde se truncó. Pre-procesado antes del render.
+- [x] **HIGH: purgeExpiredMemberAuth borraba magic links recién consumidos** — la condición `usedAt IS NOT NULL` purgaba inmediatamente, perdiendo audit log para soporte/abuse. Fix: solo purgar magic links usados hace más de 1h.
+- [x] **MEDIUM: StripeSubscription.current_period_start/end como `number` obligatorio** rompía con sub en estado `incomplete` (Stripe devuelve null → `null * 1000 = NaN` → Invalid Date). Fix: tipo nullable + helpers `subPeriodStart/End` con fallback.
+- [x] **MEDIUM: recordEventOnly atribuía orphans al primer workspace** contaminando audit del tenant 1. Fix: eliminado; eventos no manejados ahora hacen `console.log` y ack 200 sin grabar.
+- [x] **MEDIUM: csm_tz cookie con TZ inválido** podía hacer que `Intl.DateTimeFormat` lance/devuelva `Invalid Date`. Fix: regex `IANA_TZ_RE` whitelist + `formatToParts` (más robusto que parsear toLocaleString) + clamp 0-23 antes de aceptar `hour`.
+- [x] **MEDIUM: csm_utm cookie deserializada sin validación** — atacante setea `{"source":{"$ne":1}}` y `inListCi.toLowerCase()` rompe. Fix: Zod schema `.strict()` + cap de 2KB; si parse falla, ignorar silenciosamente.
+- [x] **MEDIUM: UX rota cancel admin** — ConfirmDialog mostraba "Cancelar al final del período" como confirmar y "Cancelar inmediatamente" como cancelar (que en realidad cerraba), mientras un Floating Button DUPLICADO sí cancelaba. Operadores podían perder datos. Fix: nuevo `CancelMembershipDialog` con dos botones-card claros y diferenciados visualmente, sin botón flotante.
+- [x] **MEDIUM: updateMembershipHandler REST sin sync Stripe** — un PATCH local de membership Stripe-bound se sobreescribía en el siguiente webhook. Fix: rechazar con 409 si `existing.stripeSubscriptionId !== null`; documentar que las membresías Stripe se gestionan vía portal.
+- [x] **MEDIUM: getMembershipHandler dead code** — hacía doble query (listMemberships luego select por id). Fix: solo el select por id.
+- [x] **MEDIUM: resolvePublicWorkspace fallback silencioso en producción** podía atribuir checkouts al tenant equivocado en multi-tenant si el host no resolvía. Fix: `console.warn` cuando `NODE_ENV=production` con el host actual para diagnóstico.
+- [x] **LOW: countActiveMembersByTier inline SQL `IN (...)`** sin tipado del enum. Fix: nueva const `ACTIVE_MEMBERSHIP_STATUSES` + `inArray` tipado.
+- [x] **LOW: void db.update sin .catch()** podía dar unhandled rejection. Fix: `.catch(() => null)`.
+- [x] **LOW: recordMemberEvent retornaba `inserted: true` siempre** incluso cuando onConflict no insertó. Fix: ahora devuelve `{inserted: false, id: null}` correctamente.
+
+#### Verificados como NO bug en segunda auditoría
+- IP spoofing via X-Forwarded-For: aceptable en deployments tras Vercel/Cloudflare (que sobreescriben el header). Documentado.
+- Magic link throttle race (5/h por email): ventana mínima (segundos), Resend además rate-limita. Aceptable v1.
+- Audience hour-of-day fail-neutral cuando viewer.hour=null: política intencional documentada.
+- Stripe sync siempre crea nuevo Price: intencional (Stripe no permite editar precios). Acumulación de prices archivados es responsabilidad del operador desde Stripe Dashboard.
+- demo-checkout exp 30 min: aceptable (el usuario completa en segundos), defensa-en-profundidad con jti.
+- Email url no escapado en HTML: el url se construye 100% server-side con tokens random — sin XSS práctico. Aceptable.
+- past_due policy en isMembershipActive: decisión de negocio (política blanda — Stripe pasa a past_due antes de unpaid; mantener acceso evita corte abrupto en pagos lentos).
+- inListCi substring vs equality: documentado. Para equality estricto, los operadores pueden usar tier IDs (que sí son exactos).
+
+#### Verificados como NO bug (false positives)
+- Cliente Stripe sin retry: aceptable — Stripe webhook reintenta si devolvemos 5xx; outbound calls (createCheckout/createPrice) son user-facing, fallar rápido es mejor.
+- Sin rate limit en /api/stripe/checkout: la creación de session requiere member session válida (cuyo magic link YA tiene throttle 5/h). Defense-in-depth pero no urgente.
+- demo-callback token expira a 30 min: aceptable, el usuario completa el "checkout" demo en segundos. El token requiere member session activa con email matching, doble defensa.
+- Audience engine sin schema Zod: las reglas vienen del editor admin (donde el inspector valida estructura). Untrusted input no llega aquí.
+- ViewerContext.utm vacío en SSR sin cookie csm_utm: aceptable — un middleware F8c-future puede leer searchParams y persistir en cookie. Por ahora el caller que necesita utm en SSR puede leer searchParams y mergear manualmente.
+- Webhook handler ignora eventos no manejados pero los registra → idempotencia futura no rompe; refactor opcional.
+
+### ⏳ Fase 8c — A/B Testing + Live-Edit (PLAN)
+- [ ] Schema: ab_tests, ab_assignments, ab_events
+- [ ] A/B engine: middleware/RSC helper sticky variant cookie + deterministic hash + apply al render
+- [ ] Editor: bloque "A/B Variant Group" + page-level A/B
+- [ ] Dashboard A/B con conversion rate, sample size, chi-squared significance
+- [ ] Live-Edit overlay: admin logueado en `/?edit=1` → toolbar floating + click bloque → modal Tiptap → revalidateTag
 
 ## Fase 9 — Importadores + Branching + Calendar + Workflows
 - [ ] Importer wizard (WP/Notion/MD/Ghost/RSS)

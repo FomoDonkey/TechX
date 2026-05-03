@@ -1,5 +1,6 @@
+import { shouldShow } from "@/blocks/audience";
 import { type BlockSpec, getBlockSpec, validateProps } from "@/blocks/registry";
-import type { BlockNode, Breakpoint, RenderContext } from "@/blocks/types";
+import type { BlockNode, Breakpoint, RenderContext, ViewerContext } from "@/blocks/types";
 import { renderDoc } from "@/lib/render-doc";
 import { cn } from "@/lib/utils";
 import * as Icons from "lucide-react";
@@ -14,14 +15,135 @@ type RenderProps = {
   breakpoint?: Breakpoint;
 };
 
+const GUEST: ViewerContext = {
+  isAuthenticated: false,
+  email: null,
+  isActive: false,
+  tierId: null,
+  country: null,
+  device: "desktop",
+  utm: {},
+  hour: null,
+};
+
 export function RenderLayout({ layout, ctx, breakpoint }: RenderProps): ReactNode {
-  const visible = layout.filter((n) => !n.hidden?.[breakpoint ?? "desktop"]);
+  const viewer = ctx.viewer ?? GUEST;
+  const bypass = ctx.bypassGates === true;
+  // Pre-procesado: aplica audience + paywall y devuelve el árbol "trimado"
+  // donde el truncado del paywall se propaga HACIA ARRIBA (sin contenido
+  // post-paywall a NINGÚN nivel del árbol — patrón Substack estricto).
+  const trimmed = bypass ? layout : trimLayoutForViewer(layout, viewer).layout;
+  const visible = trimmed.filter((n) => !n.hidden?.[breakpoint ?? "desktop"]);
   return (
     <>
       {visible.map((node) => (
         <Fragment key={node.id}>{renderNode(node, ctx, breakpoint)}</Fragment>
       ))}
     </>
+  );
+}
+
+/**
+ * Recorre el árbol y devuelve {layout, truncated}:
+ *  - Bloques con audiencia que no matchea → omitidos.
+ *  - Paywall con gate-OK → omitido (su contenido sigue accesible).
+ *  - Paywall con gate-FAIL → conservado como ÚLTIMO bloque + truncated:true.
+ *  - truncated:true se propaga hacia arriba: cualquier sibling DESPUÉS del
+ *    contenedor donde se truncó también se omite.
+ */
+function trimLayoutForViewer(
+  layout: BlockNode[],
+  viewer: ViewerContext,
+): { layout: BlockNode[]; truncated: boolean } {
+  const out: BlockNode[] = [];
+  for (const node of layout) {
+    if (!shouldShow(node.audience, viewer)) continue;
+
+    if (node.kind === "paywall") {
+      const props = validateProps("paywall", node.props);
+      if (!gateAllows(props, viewer)) {
+        out.push(node);
+        return { layout: out, truncated: true };
+      }
+      // Gate permite: omitir el bloque paywall pero seguir.
+      continue;
+    }
+
+    if (node.children?.length) {
+      const sub = trimLayoutForViewer(node.children, viewer);
+      out.push({ ...node, children: sub.layout });
+      if (sub.truncated) return { layout: out, truncated: true };
+      continue;
+    }
+
+    out.push(node);
+  }
+  return { layout: out, truncated: false };
+}
+
+function gateAllows(props: Record<string, unknown>, viewer: ViewerContext): boolean {
+  const gateType =
+    props.gateType === "logged-in" || props.gateType === "specific-tiers"
+      ? props.gateType
+      : "any-tier";
+  if (gateType === "logged-in") return viewer.isAuthenticated;
+  if (gateType === "any-tier") return viewer.isActive;
+  // specific-tiers
+  if (!viewer.isActive || !viewer.tierId) return false;
+  const tierIds = Array.isArray(props.tierIds) ? (props.tierIds as string[]) : [];
+  if (tierIds.length === 0) return viewer.isActive;
+  return tierIds.includes(viewer.tierId);
+}
+
+function renderPaywallCard(props: Record<string, unknown>, viewer: ViewerContext): ReactNode {
+  const title = (props.title as string) || "Contenido para miembros";
+  const message = (props.message as string) || "Suscríbete para seguir leyendo.";
+  const ctaLabel = (props.ctaLabel as string) || "Hacerme miembro";
+  const ctaHref = (props.ctaHref as string) || "/miembros";
+  const secondaryLabel = (props.secondaryLabel as string) || "";
+  const secondaryHref = (props.secondaryHref as string) || "/miembros";
+  const teaser = props.teaser === "hard" ? "hard" : "fade";
+
+  return (
+    <section className="relative">
+      {teaser === "fade" ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-32 left-0 right-0 h-32 bg-gradient-to-b from-transparent to-background"
+        />
+      ) : null}
+      <div className="mx-auto max-w-2xl rounded-3xl border bg-card/40 p-8 text-center backdrop-blur">
+        <div className="mx-auto mb-4 inline-flex size-12 items-center justify-center rounded-full bg-violet-500/15 text-violet-300">
+          <Icons.Lock className="size-5" />
+        </div>
+        <h3 className="font-display text-2xl font-semibold">{title}</h3>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">{message}</p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <Link
+            href={ctaHref}
+            className="inline-flex h-10 items-center justify-center rounded-xl bg-gradient-to-r from-violet-500 to-pink-500 px-5 text-sm font-medium text-white shadow-lg shadow-violet-500/20 transition-shadow hover:shadow-violet-500/40"
+          >
+            {ctaLabel}
+          </Link>
+          {secondaryLabel ? (
+            <Link
+              href={secondaryHref}
+              className="inline-flex h-10 items-center justify-center rounded-xl border px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted/40"
+            >
+              {secondaryLabel}
+            </Link>
+          ) : null}
+        </div>
+        {!viewer.isAuthenticated ? (
+          <p className="mt-4 text-xs text-muted-foreground">
+            ¿Ya tienes cuenta?{" "}
+            <Link href="/miembros" className="underline underline-offset-2">
+              Inicia sesión
+            </Link>
+          </p>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -97,6 +219,11 @@ function BlockRender({
       return renderDivider(props);
     case "symbol":
       return renderSymbol(props, ctx, bp);
+    case "paywall":
+      // El paywall se procesa en RenderLayout para poder truncar siblings.
+      // Si llega aquí (p.ej. preview en builder con bypassGates) renderizamos
+      // el card siempre como visualización informativa.
+      return renderPaywallCard(props, ctx.viewer ?? GUEST);
     default:
       return (
         <div className="rounded border border-dashed p-4 text-xs text-muted-foreground">

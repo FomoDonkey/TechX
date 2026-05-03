@@ -71,6 +71,70 @@ export const automationStepStatusEnum = pgEnum("automation_step_status", [
 ]);
 export const menuLocationEnum = pgEnum("menu_location", ["header", "footer", "sidebar", "custom"]);
 export const redirectMatchTypeEnum = pgEnum("redirect_match_type", ["exact", "prefix", "regex"]);
+export const campaignStatusEnum = pgEnum("campaign_status", [
+  "draft",
+  "scheduled",
+  "sending",
+  "sent",
+  "paused",
+  "failed",
+]);
+export const campaignRecipientStatusEnum = pgEnum("campaign_recipient_status", [
+  "pending",
+  "sending",
+  "sent",
+  "bounced",
+  "complained",
+  "failed",
+  "unsubscribed",
+]);
+export const dripStatusEnum = pgEnum("drip_status", ["draft", "active", "paused"]);
+export const dripEnrollmentStatusEnum = pgEnum("drip_enrollment_status", [
+  "active",
+  "completed",
+  "cancelled",
+  "paused",
+]);
+export const dripTriggerTypeEnum = pgEnum("drip_trigger_type", [
+  "subscribe_confirmed",
+  "tag_added",
+  "manual",
+]);
+export const emailEventTypeEnum = pgEnum("email_event_type", [
+  "queued",
+  "sent",
+  "delivered",
+  "open",
+  "click",
+  "bounce",
+  "complaint",
+  "unsubscribe",
+  "failed",
+]);
+export const membershipStatusEnum = pgEnum("membership_status", [
+  "incomplete",
+  "trialing",
+  "active",
+  "past_due",
+  "canceled",
+  "unpaid",
+  "paused",
+]);
+export const tierIntervalEnum = pgEnum("tier_interval", ["month", "year", "lifetime"]);
+export const memberEventTypeEnum = pgEnum("member_event_type", [
+  "membership_created",
+  "membership_updated",
+  "membership_canceled",
+  "membership_resumed",
+  "tier_changed",
+  "payment_succeeded",
+  "payment_failed",
+  "trial_started",
+  "trial_ended",
+  "magic_link_sent",
+  "session_started",
+  "session_ended",
+]);
 
 // ============================================================
 // AUTH (Better-Auth tables)
@@ -483,9 +547,43 @@ export const subscribers = pgTable(
     status: subscriberStatusEnum("status").notNull().default("active"),
     tags: text("tags").array(),
     source: text("source"),
+    preferences: jsonb("preferences"),
+    confirmedAt: timestamp("confirmed_at"),
+    unsubscribedAt: timestamp("unsubscribed_at"),
+    unsubscribeReason: text("unsubscribe_reason"),
+    unsubscribeToken: text("unsubscribe_token"),
+    lastOpenAt: timestamp("last_open_at"),
+    lastClickAt: timestamp("last_click_at"),
+    bounceCount: integer("bounce_count").default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("subscribers_ws_email_idx").on(t.workspaceId, t.email),
+    uniqueIndex("subscribers_unsub_token_idx").on(t.unsubscribeToken),
+    index("subscribers_ws_status_idx").on(t.workspaceId, t.status),
+  ],
+);
+
+export const subscriberConfirmations = pgTable(
+  "subscriber_confirmations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    subscriberId: uuid("subscriber_id")
+      .notNull()
+      .references(() => subscribers.id, { onDelete: "cascade" }),
+    token: text("token").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    confirmedAt: timestamp("confirmed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("subscribers_ws_email_idx").on(t.workspaceId, t.email)],
+  (t) => [
+    uniqueIndex("subscriber_confirmations_token_idx").on(t.token),
+    index("subscriber_confirmations_sub_idx").on(t.subscriberId),
+  ],
 );
 
 export const segments = pgTable("segments", {
@@ -497,45 +595,340 @@ export const segments = pgTable("segments", {
   rules: jsonb("rules"),
 });
 
-export const campaigns = pgTable("campaigns", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id")
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  subject: text("subject").notNull(),
-  body: jsonb("body"),
-  segmentId: uuid("segment_id"),
-  scheduledAt: timestamp("scheduled_at"),
-  sentAt: timestamp("sent_at"),
-  status: text("status").default("draft"),
-  opens: integer("opens").default(0),
-  clicks: integer("clicks").default(0),
-});
+export const campaigns = pgTable(
+  "campaigns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    subject: text("subject").notNull(),
+    previewText: text("preview_text"),
+    fromName: text("from_name"),
+    fromEmail: text("from_email"),
+    replyTo: text("reply_to"),
+    body: jsonb("body"),
+    bodyHtml: text("body_html"),
+    templateId: uuid("template_id"),
+    segmentId: uuid("segment_id"),
+    scheduledAt: timestamp("scheduled_at"),
+    startedAt: timestamp("started_at"),
+    sentAt: timestamp("sent_at"),
+    status: campaignStatusEnum("status").notNull().default("draft"),
+    totalRecipients: integer("total_recipients").default(0),
+    sent: integer("sent").default(0),
+    opens: integer("opens").default(0),
+    uniqueOpens: integer("unique_opens").default(0),
+    clicks: integer("clicks").default(0),
+    uniqueClicks: integer("unique_clicks").default(0),
+    bounced: integer("bounced").default(0),
+    complained: integer("complained").default(0),
+    unsubscribed: integer("unsubscribed").default(0),
+    failed: integer("failed").default(0),
+    createdById: text("created_by_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("campaigns_ws_status_idx").on(t.workspaceId, t.status)],
+);
 
-export const tiers = pgTable("tiers", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id")
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  priceCents: integer("price_cents").notNull(),
-  interval: text("interval").default("month"),
-  perks: jsonb("perks"),
-  stripePriceId: text("stripe_price_id"),
-});
+export const campaignRecipients = pgTable(
+  "campaign_recipients",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "cascade" }),
+    subscriberId: uuid("subscriber_id")
+      .notNull()
+      .references(() => subscribers.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    status: campaignRecipientStatusEnum("status").notNull().default("pending"),
+    trackingHash: text("tracking_hash").notNull(),
+    queuedAt: timestamp("queued_at").notNull().defaultNow(),
+    sentAt: timestamp("sent_at"),
+    openedAt: timestamp("opened_at"),
+    openCount: integer("open_count").default(0),
+    clickedAt: timestamp("clicked_at"),
+    clickCount: integer("click_count").default(0),
+    bouncedAt: timestamp("bounced_at"),
+    failedAt: timestamp("failed_at"),
+    failureReason: text("failure_reason"),
+    providerMessageId: text("provider_message_id"),
+  },
+  (t) => [
+    uniqueIndex("campaign_recipients_unique_idx").on(t.campaignId, t.subscriberId),
+    uniqueIndex("campaign_recipients_tracking_idx").on(t.trackingHash),
+    index("campaign_recipients_status_idx").on(t.workspaceId, t.status),
+  ],
+);
 
-export const memberships = pgTable("memberships", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id")
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  email: text("email").notNull(),
-  tierId: uuid("tier_id"),
-  stripeCustomerId: text("stripe_customer_id"),
-  status: text("status").default("active"),
-  currentPeriodEnd: timestamp("current_period_end"),
-});
+export const emailTemplates = pgTable(
+  "email_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    subject: text("subject"),
+    previewText: text("preview_text"),
+    body: jsonb("body"),
+    bodyHtml: text("body_html"),
+    variables: jsonb("variables"),
+    builtinKey: text("builtin_key"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("email_templates_ws_slug_idx").on(t.workspaceId, t.slug)],
+);
+
+export const drips = pgTable(
+  "drips",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    triggerType: dripTriggerTypeEnum("trigger_type").notNull().default("subscribe_confirmed"),
+    triggerConfig: jsonb("trigger_config"),
+    steps: jsonb("steps"),
+    status: dripStatusEnum("status").notNull().default("draft"),
+    enrolledTotal: integer("enrolled_total").default(0),
+    completedTotal: integer("completed_total").default(0),
+    createdById: text("created_by_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("drips_ws_status_idx").on(t.workspaceId, t.status)],
+);
+
+export const dripEnrollments = pgTable(
+  "drip_enrollments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    dripId: uuid("drip_id")
+      .notNull()
+      .references(() => drips.id, { onDelete: "cascade" }),
+    subscriberId: uuid("subscriber_id")
+      .notNull()
+      .references(() => subscribers.id, { onDelete: "cascade" }),
+    currentStep: integer("current_step").notNull().default(0),
+    nextRunAt: timestamp("next_run_at"),
+    status: dripEnrollmentStatusEnum("status").notNull().default("active"),
+    enrolledAt: timestamp("enrolled_at").notNull().defaultNow(),
+    completedAt: timestamp("completed_at"),
+    cancelledAt: timestamp("cancelled_at"),
+    cancelReason: text("cancel_reason"),
+  },
+  (t) => [
+    uniqueIndex("drip_enrollments_unique_idx").on(t.dripId, t.subscriberId),
+    index("drip_enrollments_next_run_idx").on(t.status, t.nextRunAt),
+  ],
+);
+
+export const emailEvents = pgTable(
+  "email_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    type: emailEventTypeEnum("type").notNull(),
+    subscriberId: uuid("subscriber_id").references(() => subscribers.id, { onDelete: "set null" }),
+    campaignId: uuid("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+    recipientId: uuid("recipient_id").references(() => campaignRecipients.id, {
+      onDelete: "set null",
+    }),
+    dripId: uuid("drip_id").references(() => drips.id, { onDelete: "set null" }),
+    dripEnrollmentId: uuid("drip_enrollment_id").references(() => dripEnrollments.id, {
+      onDelete: "set null",
+    }),
+    url: text("url"),
+    ipHash: text("ip_hash"),
+    userAgent: text("user_agent"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("email_events_ws_created_idx").on(t.workspaceId, t.createdAt),
+    index("email_events_campaign_idx").on(t.campaignId, t.type),
+    index("email_events_subscriber_idx").on(t.subscriberId, t.createdAt),
+  ],
+);
+
+export const tiers = pgTable(
+  "tiers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    priceCents: integer("price_cents").notNull().default(0),
+    currency: text("currency").notNull().default("eur"),
+    interval: tierIntervalEnum("interval").notNull().default("month"),
+    /** Días de prueba antes del primer cargo (0 = sin trial). */
+    trialDays: integer("trial_days").notNull().default(0),
+    /** Lista de strings (features visibles en checkout/portal). */
+    features: jsonb("features").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    /** Si es false, no se muestra en /miembros (oculto pero las membresías activas siguen). */
+    isActive: boolean("is_active").notNull().default(true),
+    /** Tier "free" (precio 0): se concede sin Stripe. */
+    isFree: boolean("is_free").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    /** IDs en Stripe — se rellenan con "Sincronizar con Stripe". */
+    stripeProductId: text("stripe_product_id"),
+    stripePriceId: text("stripe_price_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("tiers_ws_slug_idx").on(t.workspaceId, t.slug),
+    index("tiers_ws_active_idx").on(t.workspaceId, t.isActive, t.sortOrder),
+    index("tiers_stripe_price_idx").on(t.stripePriceId),
+  ],
+);
+
+export const memberships = pgTable(
+  "memberships",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    name: text("name"),
+    tierId: uuid("tier_id").references(() => tiers.id, { onDelete: "set null" }),
+    status: membershipStatusEnum("status").notNull().default("active"),
+    stripeCustomerId: text("stripe_customer_id"),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    currentPeriodStart: timestamp("current_period_start"),
+    currentPeriodEnd: timestamp("current_period_end"),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    canceledAt: timestamp("canceled_at"),
+    trialEnd: timestamp("trial_end"),
+    startedAt: timestamp("started_at").notNull().defaultNow(),
+    /** Origen del registro: "checkout" | "manual" | "import" | "demo" | "free". */
+    source: text("source"),
+    metadata: jsonb("metadata").$type<unknown>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("memberships_ws_email_idx").on(t.workspaceId, t.email),
+    index("memberships_ws_status_idx").on(t.workspaceId, t.status),
+    index("memberships_stripe_sub_idx").on(t.stripeSubscriptionId),
+    index("memberships_stripe_cust_idx").on(t.stripeCustomerId),
+  ],
+);
+
+/**
+ * Sesiones del MIEMBRO (separado del admin Better-Auth).
+ * El token de cookie es un secreto random; aquí guardamos su sha256 para verify.
+ */
+export const memberSessions = pgTable(
+  "member_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    userAgent: text("user_agent"),
+    ipHash: text("ip_hash"),
+    expiresAt: timestamp("expires_at").notNull(),
+    lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("member_sessions_token_idx").on(t.tokenHash),
+    index("member_sessions_ws_email_idx").on(t.workspaceId, t.email),
+    index("member_sessions_expires_idx").on(t.expiresAt),
+  ],
+);
+
+/** Magic links one-shot para login de miembro vía email. */
+export const memberMagicLinks = pgTable(
+  "member_magic_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    redirectTo: text("redirect_to"),
+    expiresAt: timestamp("expires_at").notNull(),
+    usedAt: timestamp("used_at"),
+    ipHash: text("ip_hash"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("member_magic_links_token_idx").on(t.tokenHash),
+    index("member_magic_links_ws_email_idx").on(t.workspaceId, t.email),
+  ],
+);
+
+/** Audit log de eventos de membresía (Stripe webhooks + acciones manuales). */
+export const memberEvents = pgTable(
+  "member_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    membershipId: uuid("membership_id").references(() => memberships.id, {
+      onDelete: "set null",
+    }),
+    email: text("email"),
+    type: memberEventTypeEnum("type").notNull(),
+    /** event.id de Stripe para idempotencia (NULL para eventos manuales). */
+    stripeEventId: text("stripe_event_id"),
+    data: jsonb("data").$type<unknown>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("member_events_stripe_evt_idx").on(t.stripeEventId),
+    index("member_events_ws_created_idx").on(t.workspaceId, t.createdAt),
+    index("member_events_membership_idx").on(t.membershipId, t.createdAt),
+  ],
+);
+
+/**
+ * Reglas de personalización con nombre (reusables).
+ * En F8b la audiencia se persiste embebida en cada bloque (`block.audience`),
+ * esta tabla queda preparada para reglas-named en F8c.
+ */
+export const personalizationRules = pgTable(
+  "personalization_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    rule: jsonb("rule").$type<unknown>().notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("personalization_rules_ws_name_idx").on(t.workspaceId, t.name)],
+);
 
 // ============================================================
 // FORMS
@@ -1094,3 +1487,32 @@ export type Menu = typeof menus.$inferSelect;
 export type NewMenu = typeof menus.$inferInsert;
 export type Redirect = typeof redirects.$inferSelect;
 export type NewRedirect = typeof redirects.$inferInsert;
+export type Segment = typeof segments.$inferSelect;
+export type NewSegment = typeof segments.$inferInsert;
+export type Campaign = typeof campaigns.$inferSelect;
+export type NewCampaign = typeof campaigns.$inferInsert;
+export type CampaignRecipient = typeof campaignRecipients.$inferSelect;
+export type NewCampaignRecipient = typeof campaignRecipients.$inferInsert;
+export type EmailTemplate = typeof emailTemplates.$inferSelect;
+export type NewEmailTemplate = typeof emailTemplates.$inferInsert;
+export type Drip = typeof drips.$inferSelect;
+export type NewDrip = typeof drips.$inferInsert;
+export type DripEnrollment = typeof dripEnrollments.$inferSelect;
+export type NewDripEnrollment = typeof dripEnrollments.$inferInsert;
+export type EmailEvent = typeof emailEvents.$inferSelect;
+export type NewEmailEvent = typeof emailEvents.$inferInsert;
+export type SubscriberConfirmation = typeof subscriberConfirmations.$inferSelect;
+export type NewSubscriberConfirmation = typeof subscriberConfirmations.$inferInsert;
+export type NewSubscriber = typeof subscribers.$inferInsert;
+export type Membership = typeof memberships.$inferSelect;
+export type NewMembership = typeof memberships.$inferInsert;
+export type Tier = typeof tiers.$inferSelect;
+export type NewTier = typeof tiers.$inferInsert;
+export type MemberSession = typeof memberSessions.$inferSelect;
+export type NewMemberSession = typeof memberSessions.$inferInsert;
+export type MemberMagicLink = typeof memberMagicLinks.$inferSelect;
+export type NewMemberMagicLink = typeof memberMagicLinks.$inferInsert;
+export type MemberEvent = typeof memberEvents.$inferSelect;
+export type NewMemberEvent = typeof memberEvents.$inferInsert;
+export type PersonalizationRule = typeof personalizationRules.$inferSelect;
+export type NewPersonalizationRule = typeof personalizationRules.$inferInsert;

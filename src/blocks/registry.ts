@@ -956,6 +956,87 @@ const DIVIDER: BlockSpec = {
   propsSchema: z.object({ color: z.string().default("") }).partial(),
 };
 
+const PAYWALL: BlockSpec = {
+  kind: "paywall",
+  label: "Paywall",
+  icon: "Lock",
+  group: "Especial",
+  description:
+    "Gate de contenido — todo lo que viene DESPUÉS sólo se muestra a miembros que cumplen la condición.",
+  canHaveChildren: false,
+  defaultProps: {
+    gateType: "any-tier",
+    tierIds: [] as string[],
+    title: "Contenido para miembros",
+    message:
+      "Suscríbete o inicia sesión para seguir leyendo este artículo y acceder a todo el archivo.",
+    ctaLabel: "Hacerme miembro",
+    ctaHref: "/miembros",
+    secondaryLabel: "Ya soy miembro",
+    secondaryHref: "/miembros",
+    teaser: "fade",
+  },
+  propsSpec: [
+    {
+      key: "gateType",
+      label: "Tipo de gate",
+      kind: "select",
+      group: "Contenido",
+      options: [
+        { value: "logged-in", label: "Cualquier miembro logueado" },
+        { value: "any-tier", label: "Cualquier membresía activa" },
+        { value: "specific-tiers", label: "Sólo tiers específicos" },
+      ],
+    },
+    {
+      key: "tierIds",
+      label: "IDs de tiers (separados por coma)",
+      kind: "longtext",
+      group: "Contenido",
+      description: "Sólo aplica si gate=specific-tiers",
+    },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "message", label: "Mensaje", kind: "longtext", group: "Contenido" },
+    { key: "ctaLabel", label: "Botón principal", kind: "text", group: "Contenido" },
+    { key: "ctaHref", label: "URL principal", kind: "url", group: "Contenido" },
+    { key: "secondaryLabel", label: "Botón secundario", kind: "text", group: "Contenido" },
+    { key: "secondaryHref", label: "URL secundaria", kind: "url", group: "Contenido" },
+    {
+      key: "teaser",
+      label: "Estilo teaser",
+      kind: "select",
+      group: "Estilo",
+      options: [
+        { value: "fade", label: "Fade gradiente al cortar" },
+        { value: "hard", label: "Corte limpio" },
+      ],
+    },
+  ],
+  propsSchema: z
+    .object({
+      gateType: z.enum(["logged-in", "any-tier", "specific-tiers"]).default("any-tier"),
+      tierIds: z
+        .union([z.string(), z.array(z.string())])
+        .transform((v) =>
+          Array.isArray(v)
+            ? v.filter((s) => /^[0-9a-f-]{36}$/.test(s))
+            : v
+                .split(/[,\s]+/)
+                .map((s) => s.trim())
+                .filter((s) => /^[0-9a-f-]{36}$/.test(s)),
+        )
+        .default([]),
+      title: z.string().default("Contenido para miembros"),
+      message: z.string().default(""),
+      ctaLabel: z.string().default("Hacerme miembro"),
+      ctaHref: z.string().default("/miembros"),
+      secondaryLabel: z.string().default(""),
+      secondaryHref: z.string().default(""),
+      teaser: z.enum(["fade", "hard"]).default("fade"),
+    })
+    .partial(),
+};
+
 const SYMBOL: BlockSpec = {
   kind: "symbol",
   label: "Símbolo",
@@ -1001,6 +1082,7 @@ export const BLOCK_SPECS: BlockSpec[] = [
   FOOTER_COLS,
   SPACER,
   DIVIDER,
+  PAYWALL,
   SYMBOL,
 ];
 

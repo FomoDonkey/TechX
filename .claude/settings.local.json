@@ -40,7 +40,23 @@
       "Bash(git add *)",
       "Bash(git -c user.email=edgar.octopusprime@gmail.com -c user.name=\"Edgar\" commit -m \"Initial commit: CSM through F7b \\(Forms + Automations\\)\" --quiet)",
       "Bash(gh repo *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(python -c ' *)",
+      "Bash(python)",
+      "Bash(python _fix_compose.py)",
+      "Bash(python _fix2.py)",
+      "Bash(rm _fix2.py)",
+      "Bash(python _fix3.py)",
+      "Bash(rm _fix3.py)",
+      "Bash(SKIP_ENV_VALIDATION=true npx tsx _smoke_sanitizer.mjs)",
+      "Bash(API_KEY_PEPPER=\"test-pepper-pepper-pepper\" SKIP_ENV_VALIDATION=true npx tsx _smoke_sanitizer.mjs)",
+      "Bash(SKIP_ENV_VALIDATION=true NEXT_PUBLIC_APP_URL=http://localhost:3000 npm run build)",
+      "Bash(grep -v \":0$\")",
+      "Bash(npx drizzle-kit *)",
+      "Bash(npx tsx *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }

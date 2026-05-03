@@ -16,6 +16,17 @@ export const WEBHOOK_EVENTS = [
   "comment.spam",
   "form.submitted",
   "media.uploaded",
+  "subscriber.created",
+  "subscriber.confirmed",
+  "subscriber.unsubscribed",
+  "subscriber.bounced",
+  "campaign.scheduled",
+  "campaign.sent",
+  "membership.created",
+  "membership.updated",
+  "membership.canceled",
+  "membership.payment_succeeded",
+  "membership.payment_failed",
 ] as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
@@ -33,6 +44,17 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   "comment.spam": "Comentario marcado como spam",
   "form.submitted": "Formulario enviado",
   "media.uploaded": "Asset subido",
+  "subscriber.created": "Suscriptor creado",
+  "subscriber.confirmed": "Suscriptor confirmado",
+  "subscriber.unsubscribed": "Suscriptor cancelado",
+  "subscriber.bounced": "Suscriptor con rebote",
+  "campaign.scheduled": "Campaña programada",
+  "campaign.sent": "Campaña enviada",
+  "membership.created": "Membresía creada",
+  "membership.updated": "Membresía actualizada",
+  "membership.canceled": "Membresía cancelada",
+  "membership.payment_succeeded": "Pago de membresía OK",
+  "membership.payment_failed": "Pago de membresía falló",
 };
 
 export const WEBHOOK_EVENT_GROUPS: Array<{ label: string; events: WebhookEvent[] }> = [
@@ -50,6 +72,27 @@ export const WEBHOOK_EVENT_GROUPS: Array<{ label: string; events: WebhookEvent[]
   { label: "Comentarios", events: ["comment.created", "comment.approved", "comment.spam"] },
   { label: "Formularios", events: ["form.submitted"] },
   { label: "Media", events: ["media.uploaded"] },
+  {
+    label: "Newsletter",
+    events: [
+      "subscriber.created",
+      "subscriber.confirmed",
+      "subscriber.unsubscribed",
+      "subscriber.bounced",
+      "campaign.scheduled",
+      "campaign.sent",
+    ],
+  },
+  {
+    label: "Membresías",
+    events: [
+      "membership.created",
+      "membership.updated",
+      "membership.canceled",
+      "membership.payment_succeeded",
+      "membership.payment_failed",
+    ],
+  },
 ];
 
 /** Backoff exponencial: cada índice representa el delay para ese intento. */

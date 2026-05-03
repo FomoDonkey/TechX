@@ -13,6 +13,7 @@ export type SendEmailResult = {
   id?: string;
   previewUrl?: string;
   mocked?: boolean;
+  error?: string;
 };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
@@ -51,14 +52,14 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     if (!res.ok) {
       const body = await res.text();
       console.error("Resend error", res.status, body);
-      return { ok: false };
+      return { ok: false, error: `resend_${res.status}` };
     }
 
     const data = (await res.json()) as { id?: string };
     return { ok: true, id: data.id };
   } catch (err) {
     console.error("Resend fetch failed", err);
-    return { ok: false };
+    return { ok: false, error: err instanceof Error ? err.message : "fetch_failed" };
   }
 }
 
@@ -87,6 +88,50 @@ export async function sendMagicLinkEmail({ to, url }: { to: string; url: string 
     console.log("🔗 magic link →", url, "\n");
   }
   return result;
+}
+
+export async function sendMemberMagicLinkEmail({
+  to,
+  workspaceName,
+  url,
+}: {
+  to: string;
+  workspaceName: string;
+  url: string;
+}) {
+  const subject = `Tu enlace para entrar a ${workspaceName}`;
+  const html = `
+<!doctype html>
+<html><body style="font-family:ui-sans-serif,system-ui,sans-serif;background:#0c0a14;color:#fff;padding:32px;">
+  <div style="max-width:480px;margin:0 auto;background:linear-gradient(160deg,#1a1228,#0c0a14);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:32px;">
+    <div style="font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#c08bff;margin-bottom:8px;">${escapeHtml(workspaceName)}</div>
+    <h1 style="font-size:22px;margin:0 0 12px;">Tu acceso está listo ✨</h1>
+    <p style="color:#b8b3c7;line-height:1.6;margin:0 0 24px;">
+      Haz click en el botón para entrar como miembro. El enlace caduca en 15 minutos y solo se puede usar una vez.
+    </p>
+    <a href="${url}" style="display:inline-block;background:linear-gradient(120deg,#9b5cff,#ff5db1);color:#fff;text-decoration:none;padding:14px 24px;border-radius:14px;font-weight:600;">Entrar →</a>
+    <p style="color:#736e83;font-size:12px;margin-top:32px;">Si no pediste este email, ignóralo y nadie podrá usar el enlace.</p>
+  </div>
+</body></html>`;
+  const result = await sendEmail({
+    to,
+    subject,
+    html,
+    text: `Entra a ${workspaceName} como miembro: ${url}\n\nEste enlace caduca en 15 minutos.`,
+  });
+  if (result.mocked) {
+    console.log("🔗 member magic link →", url, "\n");
+  }
+  return result;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export async function sendInvitationEmail({

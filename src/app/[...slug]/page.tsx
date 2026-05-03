@@ -6,14 +6,16 @@ import { ThemeShell } from "@/components/public/theme-shell";
 import { features } from "@/env";
 import { getDefaultPublicWorkspace } from "@/lib/entries";
 import { getPublishedPageByPath } from "@/lib/pages";
+import { getViewerContext } from "@/payments/current-member";
 import { runRedirect } from "@/redirects/runtime";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
-// `revalidate = 60` da ISR on-demand. NO uso `force-static` porque la lista de
-// páginas publicadas se descubre dinámicamente desde la DB (sin generateStaticParams).
-export const revalidate = 60;
+// Páginas con paywall y personalización deben renderizarse por request
+// (cookies de miembro, geo, UA). El cache se desactiva implícitamente al
+// usar headers()/cookies(), pero forzamos para claridad.
+export const dynamic = "force-dynamic";
 
 const SLUG_SEGMENT = /^[a-z0-9-]+$/;
 
@@ -85,7 +87,11 @@ export default async function PublicPageCatchAll({
     const page = await getPublishedPageByPath(ws.id, path);
     if (!page) notFound();
     const layout = normalizeLayout(page.layout);
-    const ctx = await resolveLayout(ws.id, layout, { followSymbols: true });
+    const [ctx, viewer] = await Promise.all([
+      resolveLayout(ws.id, layout, { followSymbols: true }),
+      getViewerContext(ws.id),
+    ]);
+    ctx.viewer = viewer;
     pageData = { layout, ctx };
   } catch (err) {
     // Re-lanza notFound() (digest NEXT_NOT_FOUND); cualquier otro error → 404

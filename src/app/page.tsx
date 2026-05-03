@@ -16,10 +16,12 @@ import type { Workspace } from "@/db/schema";
 import { features } from "@/env";
 import { getDefaultPublicWorkspace } from "@/lib/entries";
 import { getPublishedHome, getPublishedPageByPath } from "@/lib/pages";
+import { getViewerContext } from "@/payments/current-member";
 import { runRedirect } from "@/redirects/runtime";
 import { headers } from "next/headers";
 
-export const revalidate = 60;
+// Si la home tiene paywall/personalización, debe renderizarse por request.
+export const dynamic = "force-dynamic";
 
 async function resolveHomePage(): Promise<{
   layout: ReturnType<typeof normalizeLayout>;
@@ -33,7 +35,11 @@ async function resolveHomePage(): Promise<{
     const home = (await getPublishedHome(ws.id)) ?? (await getPublishedPageByPath(ws.id, "/"));
     if (!home) return null;
     const layout = normalizeLayout(home.layout);
-    const ctx = await resolveLayout(ws.id, layout, { followSymbols: true });
+    const [ctx, viewer] = await Promise.all([
+      resolveLayout(ws.id, layout, { followSymbols: true }),
+      getViewerContext(ws.id),
+    ]);
+    ctx.viewer = viewer;
     return { layout, ctx, ws };
   } catch {
     return null;

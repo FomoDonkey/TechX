@@ -1,7 +1,8 @@
 "use client";
 
+import { describeAudience } from "@/blocks/audience";
 import { type BlockSpec, type PropSpec, getBlockSpec } from "@/blocks/registry";
-import type { BlockNode } from "@/blocks/types";
+import type { AudienceRule, BlockNode } from "@/blocks/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -81,6 +82,10 @@ function InspectorBody({
     onChange({ hidden: { ...(node.hidden ?? {}), [bp]: v } });
   }
 
+  function setAudience(rule: AudienceRule | undefined) {
+    onChange({ audience: rule });
+  }
+
   return (
     <aside className="flex min-h-0 flex-col overflow-y-auto border-l bg-background/40">
       <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b bg-background/80 px-4 py-3 backdrop-blur">
@@ -155,8 +160,168 @@ function InspectorBody({
             ))}
           </div>
         </Section>
+
+        <Section title="Audiencia" defaultOpen={false}>
+          <AudienceEditor value={node.audience} onChange={setAudience} />
+        </Section>
       </div>
     </aside>
+  );
+}
+
+function AudienceEditor({
+  value,
+  onChange,
+}: {
+  value: AudienceRule | undefined;
+  onChange: (rule: AudienceRule | undefined) => void;
+}) {
+  const enabled = !!value;
+  const rule: AudienceRule = value ?? {};
+
+  function patch(p: Partial<AudienceRule>) {
+    onChange({ ...rule, ...p });
+  }
+
+  function csvToList(s: string): string[] {
+    return s
+      .split(/[,\n]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  return (
+    <div className="space-y-3 px-3 py-3 text-sm">
+      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+        <div>
+          <div className="font-medium">Personalización</div>
+          <p className="text-[11px] text-muted-foreground">
+            {enabled ? describeAudience(rule) : "Visible para todos los visitantes"}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(v) => onChange(v ? { mode: "show" } : undefined)}
+        />
+      </div>
+
+      {enabled ? (
+        <>
+          <div>
+            <Label>Modo</Label>
+            <select
+              value={rule.mode ?? "show"}
+              onChange={(e) => patch({ mode: e.target.value as "show" | "hide" })}
+              className="mt-1 h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+            >
+              <option value="show">Mostrar si matchea</option>
+              <option value="hide">Ocultar si matchea</option>
+            </select>
+          </div>
+
+          <div>
+            <Label>Países (códigos ISO ES,US,MX…)</Label>
+            <Input
+              value={(rule.countries ?? []).join(",")}
+              onChange={(e) =>
+                patch({
+                  countries: csvToList(e.target.value).map((c) => c.toUpperCase()),
+                })
+              }
+              placeholder="ES,MX,US"
+              className="mt-1 h-9"
+            />
+          </div>
+
+          <div>
+            <Label>Dispositivos</Label>
+            <div className="mt-1 grid grid-cols-2 gap-2">
+              {(["mobile", "tablet", "desktop", "bot"] as const).map((d) => (
+                <label
+                  key={d}
+                  className="flex items-center gap-2 rounded-lg border bg-muted/20 px-2 py-1.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(rule.devices ?? []).includes(d)}
+                    onChange={(e) => {
+                      const cur = new Set(rule.devices ?? []);
+                      if (e.target.checked) cur.add(d);
+                      else cur.delete(d);
+                      patch({ devices: Array.from(cur) });
+                    }}
+                  />
+                  <span className="capitalize">{d}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <Label>Estado del miembro</Label>
+            <div className="mt-1 grid grid-cols-3 gap-2">
+              {(["guest", "member", "active"] as const).map((s) => (
+                <label
+                  key={s}
+                  className="flex items-center gap-2 rounded-lg border bg-muted/20 px-2 py-1.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(rule.memberState ?? []).includes(s)}
+                    onChange={(e) => {
+                      const cur = new Set(rule.memberState ?? []);
+                      if (e.target.checked) cur.add(s);
+                      else cur.delete(s);
+                      patch({ memberState: Array.from(cur) });
+                    }}
+                  />
+                  <span>{s === "guest" ? "Invitado" : s === "member" ? "Loguead@" : "Activo"}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <Label>UTM source (separados por coma)</Label>
+            <Input
+              value={(rule.utmSource ?? []).join(",")}
+              onChange={(e) => patch({ utmSource: csvToList(e.target.value) })}
+              className="mt-1 h-9"
+              placeholder="newsletter,twitter"
+            />
+          </div>
+          <div>
+            <Label>UTM medium</Label>
+            <Input
+              value={(rule.utmMedium ?? []).join(",")}
+              onChange={(e) => patch({ utmMedium: csvToList(e.target.value) })}
+              className="mt-1 h-9"
+              placeholder="email,social"
+            />
+          </div>
+          <div>
+            <Label>UTM campaign</Label>
+            <Input
+              value={(rule.utmCampaign ?? []).join(",")}
+              onChange={(e) => patch({ utmCampaign: csvToList(e.target.value) })}
+              className="mt-1 h-9"
+              placeholder="black-friday"
+            />
+          </div>
+
+          <div>
+            <Label>IDs de tier (separados por coma)</Label>
+            <Textarea
+              value={(rule.memberTierIds ?? []).join(",")}
+              onChange={(e) => patch({ memberTierIds: csvToList(e.target.value) })}
+              className="mt-1 text-xs font-mono"
+              rows={2}
+              placeholder="uuid-tier-1,uuid-tier-2"
+            />
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 
