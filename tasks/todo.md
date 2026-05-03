@@ -825,19 +825,72 @@
 - [x] **Medium**: confirmation token — primera versión guardaba un token "pending" antes del id real, riesgo de colisión unique → insert con NULL primero, update con token firmado real (sid=submission.id) después
 - [x] Verificado y NO bug: SSRF en webhook step + http step (safePublicFetch en ambos), SSRF en legacy webhookUrl forms (safePublicFetch), HMAC verify de confirmation token timing-safe, prototype pollution en templating (guard __proto__/constructor/prototype), CORS allowedOrigins enforced server-side (no solo cliente), rate-limit por IP no es timing-safe pero no es seguridad crítica, idempotencia via contentHash unique → duplicate response, honeypot field name random por form (no predecible), notification email HTML escape, body cap 256 KB en /submit, CRON_SECRET timing-safe en /automations-process, dryRun NO persiste pero ejecuta acciones reales (documentado), branch dentro de branch ignora sleep (limitación documentada), spam respuesta 200 silenciosa (no revela detección al spammer)
 
-## Fase 7c — GraphQL + CLI + SDK + Menus + Redirects (siguiente)
-- [ ] GraphQL Pothos + Yoga
-- [ ] CLI `csm` (init, push schema, export)
-- [ ] SDK TS auto-generado
-- [ ] Menus builder
-- [ ] Redirects manager + CSV import
+## ✅ Fase 7c — GraphQL + CLI + SDK + Menus + Redirects ✦ Edición Espectacular (COMPLETA)
 
-## Fase 7c — GraphQL + CLI + SDK + Menus + Redirects (siguiente)
-- [ ] GraphQL Pothos + Yoga
-- [ ] CLI `csm` (init, push schema, export)
-- [ ] SDK TS auto-generado
-- [ ] Menus builder
-- [ ] Redirects manager + CSV import
+> Mejoras vs plan: GraphQL handcrafted con `graphql` + `graphql-yoga` (sin Pothos para mantener deps mínimas y patrón "tipado sin codegen" del repo) con scopes desde API key, depth+complexity limit, persisted queries (hash allowlist), introspection toggle, playground propio. CLI `csm` con 11 comandos sin commander/yargs (banner ASCII, config en `~/.csmrc`). SDK TS handcrafted con retries exp + idempotency-key auto + async iterators para paginación + helper GraphQL. Menus con 6 item types recursivos + dnd-kit tree + 3 plantillas. Redirects con cache LRU 60s en middleware + 3 match types (exact/prefix/regex) + CSV import con preview/dry-run + detección de ciclos.
+
+### Schema upgrade
+- [x] menus ampliada: name, slug unique, location enum (header/footer/sidebar/custom), items jsonb tipado recursivo, version, isDefault, description, createdById, updatedAt
+- [x] redirects ampliada: source unique, destination, statusCode (301/302/307/308), matchType (exact/prefix/regex), preserveQuery, enabled, hits, lastHitAt, description, createdById
+- [x] enums: menu_location, redirect_match_type
+
+### GraphQL (src/graphql/)
+- [x] schema.ts: schema GraphQL handcrafted con `graphql` package — 14 tipos (Entry/Collection/Media/Page/Comment/Taxonomy/Term/Form/Submission/Automation/AutomationRun/Webhook/Menu/Redirect/Me) + 5 connection types con cursor pagination keyset
+- [x] context.ts: extractKey + verifyKey + audit + scopes; reusa el cache TTL 60s de REST
+- [x] limits.ts: depth limit 8 default + complexity limit 1000 (cost = limit args para list fields, 1 para escalares); ambos lanzan GraphQLError con extension code
+- [x] persisted.ts: allowlist por sha-256(query) en memoria; flag CSM_GRAPHQL_PERSISTED_ONLY para producción
+- [x] yoga.ts: createYoga con plugins propios (persisted/depth/complexity/audit), maskedErrors selectivo (errores con extensions.code se pasan, otros se enmascaran), CORS abierto
+- [x] /api/graphql route: POST/GET/OPTIONS via Yoga
+- [x] /api/graphql/schema route: GET SDL en text/plain (cache 60s)
+- [x] /admin/api-docs/graphql page: playground propio con editor + variables + headers + history (localStorage), 6 plantillas pre-built, status code + duration en panel de respuesta, descarga SDL
+
+### CLI `csm` (bin/csm.mjs)
+- [x] bin/csm.mjs entry shebang + arg parser propio (sin commander/yargs)
+- [x] 13 comandos: help, version, init, login, logout, whoami, pull schema, push schema, export, import, gen sdk, gen types, types graphql
+- [x] ~/.csmrc JSON con multi-profile (default + named); perms 0o600
+- [x] http wrapper con auth Bearer y JSON parse de errores
+- [x] banner ASCII con paint() ANSI (NO_COLOR friendly + skip si no TTY)
+- [x] package.json bin: { csm: ./bin/csm.mjs } + script "csm" para `npm run csm`
+
+### SDK TS (src/sdk/)
+- [x] index.ts: createCsmClient({ baseUrl, apiKey, fetch?, retries?, timeoutMs?, headers? }) handcrafted
+- [x] 12 resources tipados: entries, collections, media, pages, comments, taxonomies, forms (+ submissions), automations (+ runs), webhooks, menus, redirects, health, me
+- [x] Async iterators `iterAll()` para entries/media/comments con cursor lazy
+- [x] Idempotency-Key auto (UUIDv4) en POST/PATCH/PUT/DELETE
+- [x] Retries 3x con backoff exp en 408/425/429/5xx (respeta Retry-After)
+- [x] CsmError tipado con code, status, message, details
+- [x] gql<T>(query, variables) — usa fetch directo a /api/graphql sin idempotency
+
+### Menus (src/menus/)
+- [x] types.ts: MenuItem union de 6 tipos (link/page/collection/external/divider/heading) recursivo con children[]; MenuItemsSchema con z.union recursivo + checkMenuDepth (máx 3 niveles) + flattenItems
+- [x] lib.ts: CRUD listMenus/getById/getBySlug/getPublicMenuBySlug (host-aware) / createMenu / updateMenu / deleteMenu / resolveMenu (page→path, collection→/slug, external→href) / ensureUniqueSlug / slugify (\p{Mn} para acentos)
+- [x] templates.ts: 3 plantillas (Cabecera simple, Cabecera con desplegables, Pie con columnas)
+- [x] /admin/menus: lista con location badges, item counts (flattenItems), version
+- [x] /admin/menus/[id]: builder split-pane (1fr+320px) — tree visual con grip + flechas reorder + add child popover + inspector lateral con tipo-específico fields + flags (highlight/muted/newTab) + sticky save panel
+- [x] Public endpoint /api/public/menus/[slug]: GET cached 60s, CORS abierto, resuelve workspace por host, devuelve items con href finales
+- [x] REST /api/v1/menus (scope menus:read) + /api/v1/menus/[slug] (con items resueltos)
+
+### Redirects (src/redirects/)
+- [x] matcher.ts: applyRule + matchRedirect con exact/prefix/regex + preserveQuery + maxChain 5 + Set seen para detección de ciclos + isSelfReferential + appendQuery merge correcto
+- [x] lib.ts: validateRule (incluye anti-ReDoS heurístico para nested quantifiers + cap 256 chars en regex) + CRUD + bulkDelete/bulkSetEnabled + incrementHits atómico + parseCsv (CSV con quotes "" + multi-line) + bulkInsertRedirects + redirectsToCsv (con CSV-formula-injection guard `'`)
+- [x] runtime.ts: cache LRU 60s por workspace + cache 5min host→workspaceId + runRedirect helper que llama nextRedirect/permanentRedirect según statusCode + invalidateRedirectsCache
+- [x] Integración: app/page.tsx + app/[...slug]/page.tsx llaman runRedirect antes de render (no en middleware edge para mantener bundle limpio sin drizzle); middleware.ts existente intacto (solo auth)
+- [x] /admin/redirects: lista con búsqueda + filter status + bulk enable/disable/delete + tester en vivo + crear/editar modal + import CSV modal con preview (50 rows + errores) + export CSV download
+- [x] REST /api/v1/redirects (scope redirects:read) con filtros enabled/matchType/q
+
+### Sidebar
+- [x] Item Menús (icon ListTree) + Redirecciones (icon ArrowRightLeft) añadidos en sección Sistema
+
+### Verificación
+- [x] npx tsc --noEmit cero errores
+- [x] npm run build OK — 70+ rutas (+ /api/graphql, /api/graphql/schema, /api/public/menus/[slug], /api/v1/menus, /api/v1/menus/[slug], /api/v1/redirects, /admin/menus, /admin/menus/[id], /admin/redirects, /admin/api-docs/graphql)
+- [x] npx biome check ./src cero errores
+
+### Auditoría posterior — bugs detectados y fixeados
+- [x] **High**: CSV formula injection en redirectsToCsv → celdas que empiezan con `=`/`+`/`-`/`@`/`\t`/`\r` se prefijan con apóstrofo (`'`) que es el escape estándar OWASP; ataque era admin-malicioso → admin-víctima abriendo CSV en Excel
+- [x] **Medium**: ReDoS via regex source en redirects → validateRule rechaza patrones >256 chars y con quantifiers anidados `(.+)+` que disparan backtracking catastrófico (admin malicioso interno como vector)
+- [x] **Medium**: cross-tenant leak en getPublicMenuBySlug — slug global devolvía primer match de cualquier workspace → acepta opcional `host`, resuelve workspaceId via resolveWorkspaceIdByHost (custom domain o subdominio o fallback)
+- [x] Verificado y NO bug: SSRF en redirects (no hay fetch server-side, sólo Location header al browser); prototype pollution en parseCsv (claves fijas, no merge dinámico); GraphQL `me` sin scope (deliberado, sólo auth); persisted-only mode (env CSM_GRAPHQL_PERSISTED_ONLY=1 lanza error si no viene hash); admin actions con role gate apropiado (editor para edits, admin para delete/bulk/import); ~/.csmrc perms 0o600 verificado; CLI no imprime apiKey en whoami (sólo apiKeyId); idempotency-key NO se añade en SDK.gql() porque usa fetch directo sin pasar por wrapper; menu depth check server-side via MenuItemsSchema + checkMenuDepth; redirect cycles via Set<seen> + maxChain 5; isDefault menu race documentada (rara colisión, fix con tx en F8); slug validation drizzle parametrizado (no SQL injection); GraphQL SDL público OK (similar a OpenAPI); Yoga maskedErrors deja pasar errores con extensions.code para no esconder UNAUTHORIZED/FORBIDDEN/DEPTH_LIMIT/COMPLEXITY_LIMIT
 
 ## Fase 8 — Newsletter + Memberships + A/B + Live-Edit
 - [ ] Subscribers, segments, campaigns, drip, doble opt-in

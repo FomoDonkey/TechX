@@ -682,3 +682,47 @@ Aplicar uniformemente: webhooks dispatcher, webhook step de automations, http st
 - `npx tsc --noEmit` cero errores
 - `npx biome check ./src` cero errores tras format auto-fix
 - `npm run build` ✅ — todas las rutas nuevas (forms, automations, public API, REST v1) compilan sin warnings nuevos
+
+## Fase 7c — GraphQL + CLI + SDK + Menus + Redirects
+
+### 2026-05-03 — Zod `discriminatedUnion` no acepta z.lazy recursivo
+Para tipos recursivos discriminados como `MenuItem` (con `children: MenuItem[]`), Zod 3 no soporta `z.discriminatedUnion("type", [...])` porque cada variante necesita ser un schema concreto en build-time, no un lazy. **Fix:** usar `z.union` recursivo con `z.lazy(() => MenuItemSchema)` y aceptar la pequeña pérdida de performance (Zod tiene que probar cada variante). Para validación en producción no es bottleneck. Validar `discriminator` después manualmente si fuera crítico.
+
+### 2026-05-03 — `redirect()` de Next sólo soporta 307, `permanentRedirect()` 308
+Next 15 expone únicamente `redirect()` (307) y `permanentRedirect()` (308) como Server Actions/Server Components APIs. **No hay forma de devolver 301/302 directamente desde un Server Component** sin construir manualmente un `Response`/`NextResponse`. **Lección:** mapear pragmáticamente — 301/308 → `permanentRedirect`, 302/307 → `redirect`. Documentado en `src/redirects/runtime.ts`. Si en F8+ alguien necesita 301 estricto (HTTP semantic), exponer un endpoint route handler que devuelva `Response.redirect(url, 301)`.
+
+### 2026-05-03 — Drizzle no soporta tuple-comparison nativo para keyset pagination
+Para keyset pagination con `(updatedAt, id) < (cursor.ts, cursor.id)` (orden total estable), drizzle no expone helper. **Fix:** usar `sql\`(${entries.updatedAt}, ${entries.id}::text) < (${new Date(cur.ts)}::timestamp, ${cur.id})\`` con template literal. Funciona porque postgres soporta tuple comparison en WHERE. **Lección:** raw `sql` template es la salida natural cuando drizzle no cubre el operador.
+
+### 2026-05-03 — Yoga plugin hook signatures cambian entre versiones
+`createYoga` en graphql-yoga@5 tiene tipos de plugins poco estables (onValidate/onExecute/onParams). Tipar literalmente el payload genera `TS7031: Binding element 'params' implicitly has any`. **Fix:** anotar `(payload: any)` con `// biome-ignore lint/suspicious/noExplicitAny: Yoga plugin hooks shape varies` y desestructurar dentro. Más robusto frente a upgrades menores.
+
+### 2026-05-03 — `maskedErrors.maskError` debe devolver `Error`, no `unknown`
+El tipo `MaskError` de Yoga es `(error: unknown, message: string) => Error`. Si devuelves `error` sin cast (puede ser `unknown`), TS rechaza. **Fix:** anotar `error as Error & { extensions?: ... }` y devolver siempre un `Error`. Útil para dejar pasar errores con `extensions.code` (UNAUTHORIZED, FORBIDDEN, DEPTH_LIMIT) sin enmascarar y sí enmascarar errores de DB / inesperados.
+
+### 2026-05-03 — Middleware edge no puede importar drizzle
+Next.js middleware corre en Edge Runtime por defecto. Si el bundle importa `drizzle-orm` o `postgres` (incluso con `await import()` lazy), Webpack/Turbopack falla porque esas libs usan APIs Node. **Decisión:** NO meter el lookup de redirects en `src/middleware.ts`; en su lugar, llamar `runRedirect()` (Node, vía `permanentRedirect`/`redirect`) desde Server Components: `app/page.tsx` y `app/[...slug]/page.tsx`. Cubre todas las rutas públicas relevantes; admin/api/_next no necesitan redirects. **Trade-off:** rutas como `/blog`, `/contacto` (form), `/buscar` no aplican redirect a menos que añadamos el helper en sus pages — pero esos paths son del propio sitio, raramente targets de migración.
+
+### 2026-05-03 — CSV formula injection es admin → admin
+Cuando un admin escribe una `description` que empieza con `=cmd|...` (o `+`, `-`, `@`), el CSV exportado abre Excel/Sheets ejecutando comandos. Aunque el atacante necesita admin role para escribir, la víctima es OTRO admin que descarga el CSV. **Fix:** prefijar con apóstrofo `'` (escape OWASP estándar) en `csvCell()`. Importa para cualquier export CSV que contenga texto editable por usuarios.
+
+### 2026-05-03 — ReDoS via regex source en redirects
+Admins escriben patrones regex que se ejecutan contra cada path. Patrón `(a+)+$` con input `aaaaaaa...!` cuelga el server. **Fix doble:** (1) cap source.length a 256 chars, (2) heurística regex `/\([^)]*[+*][^)]*\)[+*]/` que detecta quantifiers anidados. No previene 100% pero bloquea los catastrofic comunes. JS no permite timeout sync en regex (workers serían overkill aquí). **Lección:** input regex de usuarios siempre necesita cap + heurística + idealmente ejecución en worker thread.
+
+### 2026-05-03 — `slug global` en getPublicMenuBySlug es cross-tenant leak
+Patrón replicado de `getPublishedFormBySlug(slug)` que es slug-global para v1. Pero si dos workspaces tienen ambos un menú `header`, el endpoint público devuelve uno arbitrario, leakeando datos. **Fix:** aceptar opcional `host`, resolver `workspaceId` via `resolveWorkspaceIdByHost` (custom domain → subdominio → fallback first ws), y filtrar la query. **Aplicar al resto de endpoints públicos**: forms también lo necesita; pendiente para F8 (compatibilidad regresiva).
+
+### 2026-05-03 — `̀-ͯ` literal en regex es señalado por biome
+La regex `/[̀-ͯ]/g` (combining marks Unicode para quitar acentos tras NFD) se renderiza visualmente como dos diacríticos juntos en el editor, y biome la marca como `noMisleadingCharacterClass`. **Fix:** usar `/\p{Mn}/gu` (Unicode property — Mark, nonspacing). Más explícito, idéntico semánticamente, pasa biome. Requiere flag `u`.
+
+### 2026-05-03 — `useEffect` con `[]` para "skip first render" rompe biome
+Pattern común: `useEffect(() => setDirty(false), [])` para marcar dirty=false en mount tras otro effect que lo marca true. Biome `useExhaustiveDependencies` se queja del primer effect porque sus deps "no se usan en el body" (el body sólo llama `setDirty`). **Fix:** usar `useRef` mountedRef + early return en el primer ciclo. Más explícito y evita el lint warning. Si la regla es realmente legítima (deps trigger-only), añadir `// biome-ignore` con justificación.
+
+### 2026-05-03 — Pothos vs handcrafted GraphQL para 14 tipos
+Pothos es excelente para schemas grandes con codegen tipado, pero requiere `@pothos/core + plugin-relay + plugin-scope-auth + plugin-validation` (~80KB de deps + boilerplate). Para 14 tipos read-only en F7c, escribir el schema con `GraphQLObjectType` handcrafted (~640 líneas en un único archivo) mantiene el patrón del repo (igual que `src/api/openapi.ts` se escribe a mano desde Zod), tipado total sin codegen, y deja `printSchema()` como SDL listo. **Lección:** apuntar más alto NO siempre es "más libs"; a veces es "menos libs, mejor patrón". Si el schema crece a 50+ tipos con mutations/subscriptions, reconsiderar Pothos.
+
+### Tras los fixes
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores tras format auto-fix
+- `npm run build` ✅ — 70+ rutas nuevas (graphql, public/menus, v1/menus, v1/redirects, admin/menus, admin/redirects, admin/api-docs/graphql)
+- CLI verificada: `node bin/csm.mjs --help` y `version` funcionan con banner ASCII espectacular

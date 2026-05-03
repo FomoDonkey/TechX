@@ -38,7 +38,9 @@
       "Bash(gh auth *)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git -c user.email=edgar.octopusprime@gmail.com -c user.name=\"Edgar\" commit -m \"Initial commit: CSM through F7b \\(Forms + Automations\\)\" --quiet)"
+      "Bash(git -c user.email=edgar.octopusprime@gmail.com -c user.name=\"Edgar\" commit -m \"Initial commit: CSM through F7b \\(Forms + Automations\\)\" --quiet)",
+      "Bash(gh repo *)",
+      "Bash(node *)"
     ]
   }
 }

@@ -16,6 +16,8 @@ import type { Workspace } from "@/db/schema";
 import { features } from "@/env";
 import { getDefaultPublicWorkspace } from "@/lib/entries";
 import { getPublishedHome, getPublishedPageByPath } from "@/lib/pages";
+import { runRedirect } from "@/redirects/runtime";
+import { headers } from "next/headers";
 
 export const revalidate = 60;
 
@@ -39,6 +41,12 @@ async function resolveHomePage(): Promise<{
 }
 
 export default async function HomePage() {
+  const hdrs = await headers();
+  const host = hdrs.get("host") ?? "";
+  if (host) {
+    // Si una regla "/" → … aplica, redirige antes de renderizar.
+    await runRedirect({ host, path: "/" });
+  }
   const home = await resolveHomePage();
   if (home) {
     return (

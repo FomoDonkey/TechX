@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import {
+  ArrowRightLeft,
   BarChart3,
   BookOpen,
   Calendar,
@@ -13,6 +14,7 @@ import {
   Key,
   Layers,
   LayoutDashboard,
+  ListTree,
   Mailbox,
   MessageSquare,
   Newspaper,
@@ -65,6 +67,8 @@ const SECTIONS: Array<{
     items: [
       { href: "/admin/api-keys", label: "API keys", icon: Key },
       { href: "/admin/webhooks", label: "Webhooks", icon: Webhook },
+      { href: "/admin/menus", label: "Menús", icon: ListTree },
+      { href: "/admin/redirects", label: "Redirecciones", icon: ArrowRightLeft },
       { href: "/admin/api-docs", label: "Docs API", icon: BookOpen },
       { href: "/admin/analiticas", label: "Analíticas", icon: BarChart3, soon: true },
       { href: "/admin/equipo", label: "Equipo", icon: Users, soon: true },

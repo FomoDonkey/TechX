@@ -6,7 +6,9 @@ import { ThemeShell } from "@/components/public/theme-shell";
 import { features } from "@/env";
 import { getDefaultPublicWorkspace } from "@/lib/entries";
 import { getPublishedPageByPath } from "@/lib/pages";
+import { runRedirect } from "@/redirects/runtime";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 // `revalidate = 60` da ISR on-demand. NO uso `force-static` porque la lista de
@@ -67,6 +69,12 @@ export default async function PublicPageCatchAll({
   const { slug } = await params;
   const path = pathFromSlug(slug);
   if (!path || !features.database) notFound();
+  const hdrs = await headers();
+  const host = hdrs.get("host") ?? "";
+  if (host) {
+    // Si una regla de redirect aplica, lanza throw (no retorna). Si no, sigue.
+    await runRedirect({ host, path });
+  }
   let pageData: {
     layout: ReturnType<typeof normalizeLayout>;
     ctx: Awaited<ReturnType<typeof resolveLayout>>;

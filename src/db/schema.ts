@@ -69,6 +69,8 @@ export const automationStepStatusEnum = pgEnum("automation_step_status", [
   "failed",
   "skipped",
 ]);
+export const menuLocationEnum = pgEnum("menu_location", ["header", "footer", "sidebar", "custom"]);
+export const redirectMatchTypeEnum = pgEnum("redirect_match_type", ["exact", "prefix", "regex"]);
 
 // ============================================================
 // AUTH (Better-Auth tables)
@@ -939,24 +941,63 @@ export const themes = pgTable(
   (t) => [uniqueIndex("themes_ws_slug_idx").on(t.workspaceId, t.slug)],
 );
 
-export const menus = pgTable("menus", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id")
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  slug: text("slug").notNull(),
-  items: jsonb("items"),
-});
+export const menus = pgTable(
+  "menus",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description"),
+    location: menuLocationEnum("location").notNull().default("header"),
+    /** Lista jerárquica de items: link/page/collection/external/divider/heading con children[]. */
+    items: jsonb("items").$type<unknown>().notNull().default(sql`'[]'::jsonb`),
+    /** Versión incremental — sube en cada save. */
+    version: integer("version").notNull().default(1),
+    /** Default por location (un solo "true" por workspace+location). */
+    isDefault: boolean("is_default").notNull().default(false),
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("menus_ws_slug_idx").on(t.workspaceId, t.slug),
+    index("menus_ws_location_idx").on(t.workspaceId, t.location),
+  ],
+);
 
-export const redirects = pgTable("redirects", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id")
-    .notNull()
-    .references(() => workspaces.id, { onDelete: "cascade" }),
-  from: text("from").notNull(),
-  to: text("to").notNull(),
-  code: integer("code").default(301),
-});
+export const redirects = pgTable(
+  "redirects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** Patrón de match: path absoluto exact, prefix con o sin trailing /, o regex JS. */
+    source: text("source").notNull(),
+    /** Destino absoluto (https://) o relativo (/path). */
+    destination: text("destination").notNull(),
+    /** 301 (perm) | 302 (temp) | 307 (perm preserva method) | 308 (perm preserva method+body). */
+    statusCode: integer("status_code").notNull().default(301),
+    matchType: redirectMatchTypeEnum("match_type").notNull().default("exact"),
+    /** Si es prefix/regex, conserva la query string original al redirigir. */
+    preserveQuery: boolean("preserve_query").notNull().default(true),
+    enabled: boolean("enabled").notNull().default(true),
+    description: text("description"),
+    /** Counter de hits — incrementado async desde middleware. */
+    hits: integer("hits").notNull().default(0),
+    lastHitAt: timestamp("last_hit_at"),
+    createdById: text("created_by_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("redirects_ws_source_idx").on(t.workspaceId, t.source),
+    index("redirects_ws_enabled_idx").on(t.workspaceId, t.enabled),
+  ],
+);
 
 export const settings = pgTable(
   "settings",
@@ -1049,3 +1090,7 @@ export type FormVersion = typeof formVersions.$inferSelect;
 export type NewFormVersion = typeof formVersions.$inferInsert;
 export type Submission = typeof submissions.$inferSelect;
 export type NewSubmission = typeof submissions.$inferInsert;
+export type Menu = typeof menus.$inferSelect;
+export type NewMenu = typeof menus.$inferInsert;
+export type Redirect = typeof redirects.$inferSelect;
+export type NewRedirect = typeof redirects.$inferInsert;
