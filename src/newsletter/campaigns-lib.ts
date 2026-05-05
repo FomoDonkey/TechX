@@ -3,6 +3,7 @@
  */
 
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import { type Campaign, campaignRecipients, campaigns, emailEvents } from "@/db/schema";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { bodyToHtml } from "./compose";
@@ -50,25 +51,24 @@ export async function createCampaign(
   const compiledHtml = input.bodyHtml ?? (input.body ? bodyToHtml(input.body) : null);
   const status = input.scheduledAt ? "scheduled" : "draft";
 
-  const [row] = await db
-    .insert(campaigns)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      subject: input.subject,
-      previewText: input.previewText ?? null,
-      fromName: input.fromName ?? null,
-      fromEmail: input.fromEmail ?? null,
-      replyTo: input.replyTo ?? null,
-      body: (input.body ?? null) as never,
-      bodyHtml: compiledHtml,
-      segmentId: input.segmentId ?? null,
-      templateId: input.templateId ?? null,
-      scheduledAt: input.scheduledAt ?? null,
-      status,
-      createdById: input.createdById ?? null,
-    })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(campaigns, {
+    id,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    subject: input.subject,
+    previewText: input.previewText ?? null,
+    fromName: input.fromName ?? null,
+    fromEmail: input.fromEmail ?? null,
+    replyTo: input.replyTo ?? null,
+    body: (input.body ?? null) as never,
+    bodyHtml: compiledHtml,
+    segmentId: input.segmentId ?? null,
+    templateId: input.templateId ?? null,
+    scheduledAt: input.scheduledAt ?? null,
+    status,
+    createdById: input.createdById ?? null,
+  })) as Campaign;
   if (!row) return { ok: false, error: "db_error" };
   return { ok: true, campaign: row };
 }
@@ -121,22 +121,26 @@ export async function updateCampaign(
   }
   if (patch.status !== undefined) updates.status = patch.status;
 
-  const [row] = await db
+  await db
     .update(campaigns)
     .set(updates)
+    .where(and(eq(campaigns.workspaceId, workspaceId), eq(campaigns.id, id)));
+  const [row] = await db
+    .select()
+    .from(campaigns)
     .where(and(eq(campaigns.workspaceId, workspaceId), eq(campaigns.id, id)))
-    .returning();
+    .limit(1);
   if (!row) return { ok: false, error: "not_found" };
   return { ok: true, campaign: row };
 }
 
 export async function deleteCampaign(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const result = await db
-    .delete(campaigns)
-    .where(and(eq(campaigns.workspaceId, workspaceId), eq(campaigns.id, id)))
-    .returning({ id: campaigns.id });
-  return result.length > 0;
+  const deleted = await deleteReturningCount(
+    campaigns,
+    and(eq(campaigns.workspaceId, workspaceId), eq(campaigns.id, id))!,
+  );
+  return deleted > 0;
 }
 
 export async function getCampaignStats(campaignId: string) {

@@ -2,6 +2,7 @@
 
 import { requireUser } from "@/auth/server";
 import { logActivity } from "@/lib/activity";
+import { httpUrlSchema } from "@/lib/safe-url";
 import { requireWorkspace } from "@/lib/workspace";
 import { replayDelivery, testWebhook } from "@/webhooks/dispatcher";
 import { WEBHOOK_EVENTS, type WebhookEvent } from "@/webhooks/events";
@@ -20,7 +21,7 @@ const EventArraySchema = z
 const CreateSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(500).optional(),
-  url: z.string().url(),
+  url: httpUrlSchema(),
   events: EventArraySchema,
   maxAttempts: z.number().int().min(1).max(10).default(5),
   active: z.boolean().default(true),
@@ -62,7 +63,7 @@ const UpdateSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(120).optional(),
   description: z.string().max(500).optional(),
-  url: z.string().url().optional(),
+  url: httpUrlSchema().optional(),
   events: EventArraySchema.optional(),
   maxAttempts: z.number().int().min(1).max(10).optional(),
   active: z.boolean().optional(),

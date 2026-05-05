@@ -17,6 +17,7 @@ import {
 import { BuilderCanvas } from "@/components/admin/builder/canvas";
 import { BuilderInspector } from "@/components/admin/builder/inspector";
 import { BlockPalette } from "@/components/admin/builder/palette";
+import { CollapsibleAside } from "@/components/admin/collapsible-aside";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm";
 import { Input } from "@/components/ui/input";
@@ -347,9 +348,12 @@ export function PageBuilder(props: Props) {
         </div>
       </header>
 
-      {/* Body */}
-      <div className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)_320px]">
-        <BlockPalette onAdd={(k) => addBlockAtRoot(k)} />
+      {/* Body — flex con paneles colapsables. Cada CollapsibleAside persiste
+          su estado en localStorage. Inspector solo aparece con bloque seleccionado. */}
+      <div className="flex min-h-0 flex-1">
+        <CollapsibleAside storageKey="csm:builder-palette" side="left" widthOpen="240px">
+          <BlockPalette onAdd={(k) => addBlockAtRoot(k)} />
+        </CollapsibleAside>
         <BuilderCanvas
           layout={layout}
           ctx={ctx}
@@ -357,16 +361,26 @@ export function PageBuilder(props: Props) {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onDropNew={(kind, _parentId, index) => addBlockAtRoot(kind, index)}
+          pageId={props.pageId}
         />
-        <BuilderInspector
-          node={selectedNode}
-          symbols={props.symbols}
-          recentMedia={props.recentMedia}
-          onChange={(patch) => selectedNode && updateBlock(selectedNode.id, patch)}
-          onClose={() => setSelectedId(null)}
-          onDuplicate={() => selectedNode && duplicateBlock(selectedNode.id)}
-          onDelete={() => selectedNode && removeBlock(selectedNode.id)}
-        />
+        {selectedNode ? (
+          <CollapsibleAside
+            storageKey="csm:builder-inspector"
+            side="right"
+            widthOpen="340px"
+            openSignal={selectedNode.id}
+          >
+            <BuilderInspector
+              node={selectedNode}
+              symbols={props.symbols}
+              recentMedia={props.recentMedia}
+              onChange={(patch) => selectedNode && updateBlock(selectedNode.id, patch)}
+              onClose={() => setSelectedId(null)}
+              onDuplicate={() => selectedNode && duplicateBlock(selectedNode.id)}
+              onDelete={() => selectedNode && removeBlock(selectedNode.id)}
+            />
+          </CollapsibleAside>
+        ) : null}
       </div>
 
       {/* Settings dialog */}

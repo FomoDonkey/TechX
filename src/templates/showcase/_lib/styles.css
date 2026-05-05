@@ -1,0 +1,219 @@
+/**
+ * Estilos compartidos por las plantillas showcase.
+ *
+ * Se cargan SOLO en `/template-preview/[id]` (importado desde la page raíz),
+ * de modo que no contaminan ni el sitio público ni el admin.
+ *
+ * Patrón: cada plantilla activa una "vibe class" (.csm-show-jack, .csm-show-asme,
+ * .csm-show-michael, etc.) que aplica fonts + base typography. Las propias
+ * plantillas hacen overrides locales con Tailwind/style props.
+ */
+
+/* Fonts: load from Google for showcase. @import debe ir arriba del todo. */
+@import url("https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;700;900&family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&family=Readex+Pro:wght@300;400;500;600;700&family=Rubik:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,500;0,700;1,400;1,500;1,700&display=swap");
+
+/* Base reset para preview */
+.csm-showcase {
+  --csm-show-fg: #fafafa;
+  --csm-show-bg: #0a0a0a;
+  --csm-show-muted: rgba(255, 255, 255, 0.6);
+  background: var(--csm-show-bg);
+  color: var(--csm-show-fg);
+  font-feature-settings: "ss01", "cv01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.csm-showcase * {
+  box-sizing: border-box;
+}
+
+/* ============== Vibe: Jack (Portfolio 3D) ============== */
+.csm-show-jack {
+  --csm-show-bg: #0c0c0c;
+  --csm-show-fg: #d7e2ea;
+  background: #0c0c0c;
+  font-family: "Kanit", "Inter", system-ui, sans-serif;
+}
+.csm-show-jack .hero-heading {
+  background: linear-gradient(180deg, #646973 0%, #bbccd7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+.csm-show-jack .csm-contact-pill {
+  background: linear-gradient(123deg, #18011f 7%, #b600a8 37%, #7621b0 72%, #be4c00 100%);
+  box-shadow: 0 4px 4px rgba(181, 1, 167, 0.25), inset 4px 4px 12px #7721b1, 0 0 0 2px #fff, 0 0 0
+    5px transparent;
+}
+
+/* ============== Vibe: Michael (Editorial dark) ============== */
+.csm-show-michael {
+  --csm-show-bg: hsl(0, 0%, 4%);
+  --csm-show-fg: hsl(0, 0%, 96%);
+  --csm-show-muted: hsl(0, 0%, 53%);
+  --csm-show-stroke: hsl(0, 0%, 12%);
+  --csm-show-surface: hsl(0, 0%, 8%);
+  background: var(--csm-show-bg);
+  color: var(--csm-show-fg);
+  font-family: "Inter", system-ui, sans-serif;
+}
+.csm-show-michael .csm-display {
+  font-family: "Instrument Serif", ui-serif, Georgia, serif;
+  font-style: italic;
+  letter-spacing: -0.02em;
+}
+.csm-show-michael .accent-gradient-bar {
+  background: linear-gradient(90deg, #89aacc 0%, #4e85bf 100%);
+}
+
+/* ============== Vibe: Asme (Liquid Glass) ============== */
+.csm-show-asme {
+  --csm-show-bg: #000000;
+  --csm-show-fg: #ffffff;
+  background: #000000;
+  font-family: "Instrument Serif", ui-serif, Georgia, serif;
+}
+.csm-show-asme .csm-sans {
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ============== Vibe: Securify ============== */
+.csm-show-securify {
+  --csm-show-bg: #000000;
+  --csm-show-fg: #ffffff;
+  background: #000000;
+  font-family: "Readex Pro", "Inter", system-ui, sans-serif;
+}
+.csm-show-securify .csm-tight {
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+}
+
+/* ============== Vibe: Targo (Logistics red) ============== */
+.csm-show-targo {
+  --csm-show-bg: #050505;
+  --csm-show-fg: #ffffff;
+  --csm-show-red: #ee3f2c;
+  background: #050505;
+  font-family: "Rubik", "Inter", system-ui, sans-serif;
+}
+.csm-show-targo .csm-clip-corners {
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+}
+
+/* ============== Vibe: Power AI (Nimbus) ============== */
+.csm-show-nimbus {
+  --csm-show-bg: oklch(0.13 0.05 280);
+  --csm-show-fg: oklch(0.96 0.01 80);
+  background: var(--csm-show-bg);
+  font-family: "Inter", system-ui, sans-serif;
+}
+.csm-show-nimbus .csm-display {
+  font-family: "Instrument Serif", ui-serif, serif;
+  font-weight: 400;
+}
+.csm-show-nimbus .csm-ai-grad {
+  background-image: linear-gradient(to left, #6366f1, #a855f7, #fcd34d);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ============== Vibe: Substack/Newsletter ============== */
+.csm-show-substack {
+  --csm-show-bg: #f4ecdf;
+  --csm-show-fg: #2a1f17;
+  background: var(--csm-show-bg);
+  color: var(--csm-show-fg);
+  font-family: "Newsreader", "EB Garamond", Georgia, serif;
+}
+.csm-show-substack .csm-sans {
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ============== Vibe: Magazine paper ============== */
+.csm-show-magazine {
+  --csm-show-bg: #faf6ee;
+  --csm-show-fg: #1d1815;
+  background: var(--csm-show-bg);
+  color: var(--csm-show-fg);
+  font-family: "Newsreader", "EB Garamond", Georgia, serif;
+}
+
+/* ============== Vibe: Coming Soon (Mint) ============== */
+.csm-show-mint {
+  --csm-show-bg: #0d1f1c;
+  --csm-show-fg: #e8fff6;
+  --csm-show-mint: #4ee0a5;
+  background: linear-gradient(180deg, #0d1f1c 0%, #0a1814 100%);
+  color: var(--csm-show-fg);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ============== Vibe: Docs (Aurora indigo) ============== */
+.csm-show-docs {
+  --csm-show-bg: #050616;
+  --csm-show-fg: #f0f3ff;
+  background: var(--csm-show-bg);
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ============== Halftone overlay reusable ============== */
+.csm-halftone {
+  background-image: radial-gradient(circle, currentColor 1px, transparent 1px);
+  background-size: 4px 4px;
+  mix-blend-mode: multiply;
+}
+
+/* ============== Glass pill nav reusable ============== */
+.csm-glass-pill {
+  background: rgba(20, 20, 22, 0.55);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+}
+
+/* ============== Custom keyframes ============== */
+@keyframes csm-scroll-down {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(200%);
+  }
+}
+@keyframes csm-role-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes csm-gradient-shift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+.csm-anim-scroll-down {
+  animation: csm-scroll-down 1.5s ease-in-out infinite;
+}
+.csm-anim-role {
+  animation: csm-role-fade 0.4s ease-out;
+}
+.csm-anim-gradient {
+  background-size: 200% 200%;
+  animation: csm-gradient-shift 6s ease infinite;
+}
+
+/* (Fonts cargadas en la cabecera del archivo). */

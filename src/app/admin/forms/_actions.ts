@@ -1,6 +1,7 @@
 "use server";
 
 import { requireUser } from "@/auth/server";
+import { isSafeUrl } from "@/blocks/registry";
 import type { Form } from "@/db/schema";
 import {
   archiveForm,
@@ -20,11 +21,25 @@ import { requireWorkspace } from "@/lib/workspace";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+/**
+ * Schema Zod para `redirectUrl`: pasa por `isSafeUrl` (whitelist usado en
+ * bloques) — bloquea `javascript:`, `data:`, protocol-relative `//evil.com`,
+ * control chars. Sin esto, un editor comprometido podía apuntar el redirect
+ * a un phishing clone y harvestear credenciales de los submitters
+ * (audit F0-F9a layer 3).
+ */
+const safeRedirectUrl = z
+  .string()
+  .max(2048)
+  .refine((v) => v === "" || isSafeUrl(v), {
+    message: "URL inválida (sólo http(s), rutas relativas, anchor, mailto:, tel:)",
+  });
+
 const SchemaJsonSchema = z.object({
   fields: z.array(z.record(z.unknown())),
   steps: z.array(z.record(z.unknown())).default([]),
   successMessage: z.string().optional(),
-  redirectUrl: z.string().url().optional().or(z.literal("")),
+  redirectUrl: safeRedirectUrl.optional().or(z.literal("")),
   submitLabel: z.string().optional(),
 });
 
@@ -93,7 +108,7 @@ const UpdateSchema = z.object({
   schema: SchemaJsonSchema.optional(),
   settings: SettingsJsonSchema.optional(),
   successMessage: z.string().nullable().optional(),
-  redirectUrl: z.string().url().nullable().optional(),
+  redirectUrl: safeRedirectUrl.nullable().optional(),
   notificationEmails: z.array(z.string().email()).optional(),
 });
 

@@ -3,6 +3,7 @@
 import { createFolderAction, deleteFolderAction } from "@/app/admin/medios/_actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { groupByParent } from "@/lib/tree";
 import { cn } from "@/lib/utils";
 import { ChevronRight, FolderClosed, FolderPlus, Inbox, Trash2 } from "lucide-react";
 import Link from "next/link";
@@ -16,16 +17,6 @@ export type FolderNode = {
   parentId: string | null;
   count: number;
 };
-
-function buildTree(nodes: FolderNode[]) {
-  const byParent = new Map<string | null, FolderNode[]>();
-  for (const n of nodes) {
-    const arr = byParent.get(n.parentId) ?? [];
-    arr.push(n);
-    byParent.set(n.parentId, arr);
-  }
-  return byParent;
-}
 
 export function FolderTree({
   folders,
@@ -42,7 +33,7 @@ export function FolderTree({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [pending, start] = useTransition();
-  const tree = buildTree(folders);
+  const tree = groupByParent(folders);
 
   function pushFolder(folderId: string | null) {
     const next = new URLSearchParams(params.toString());

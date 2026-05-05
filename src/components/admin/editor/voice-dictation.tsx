@@ -54,8 +54,17 @@ export function VoiceDictation({ editor }: Props) {
   const [interim, setInterim] = useState("");
   const [busy, setBusy] = useState(false);
   const recRef = useRef<SpeechRecognitionLite | null>(null);
-  const supported =
-    typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  // `supported` se calcula tras el mount para evitar hydration mismatch:
+  // SSR no tiene `window` (false) y el client SÍ (true) — si lo evaluamos en
+  // render directamente, el server emite nada y el client emite el botón
+  // → mismatch. Iniciamos en `false` (igual SSR) y detectamos en useEffect.
+  const [supported, setSupported] = useState(false);
+  useEffect(() => {
+    setSupported(
+      typeof window !== "undefined" &&
+        !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+    );
+  }, []);
 
   const stopRecording = useCallback(() => {
     try {

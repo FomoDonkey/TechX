@@ -4,6 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import {
   type Automation,
   type AutomationRun,
@@ -69,22 +70,21 @@ export async function createAutomation(input: CreateAutomationInput): Promise<Au
   let slug = input.slug?.trim() || slugify(input.name);
   if (!isValidSlug(slug)) slug = `auto-${randomBytes(3).toString("hex")}`;
   const webhookSecret = input.triggerType === "webhook_in" ? randomBytes(24).toString("hex") : null;
-  const [row] = await db
-    .insert(automations)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      slug,
-      description: input.description ?? null,
-      triggerType: input.triggerType,
-      trigger: input.trigger as never,
-      conditions: (input.conditions ?? null) as never,
-      actions: (input.steps ?? []) as never,
-      active: input.active ?? true,
-      webhookSecret,
-      createdById: input.createdById ?? null,
-    })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(automations, {
+    id,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    slug,
+    description: input.description ?? null,
+    triggerType: input.triggerType,
+    trigger: input.trigger as never,
+    conditions: (input.conditions ?? null) as never,
+    actions: (input.steps ?? []) as never,
+    active: input.active ?? true,
+    webhookSecret,
+    createdById: input.createdById ?? null,
+  })) as Automation;
   if (!row) throw new Error("No se pudo crear");
   return row;
 }
@@ -117,21 +117,25 @@ export async function updateAutomation(input: UpdateAutomationInput): Promise<Au
   if (input.patch.steps !== undefined) set.actions = input.patch.steps;
   if (input.patch.active !== undefined) set.active = input.patch.active;
   if (input.patch.debounceMs !== undefined) set.debounceMs = input.patch.debounceMs;
-  const [row] = await db
+  await db
     .update(automations)
     .set(set)
+    .where(and(eq(automations.workspaceId, input.workspaceId), eq(automations.id, input.id)));
+  const [row] = await db
+    .select()
+    .from(automations)
     .where(and(eq(automations.workspaceId, input.workspaceId), eq(automations.id, input.id)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
 export async function deleteAutomation(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const result = await db
-    .delete(automations)
-    .where(and(eq(automations.workspaceId, workspaceId), eq(automations.id, id)))
-    .returning({ id: automations.id });
-  return result.length > 0;
+  const deleted = await deleteReturningCount(
+    automations,
+    and(eq(automations.workspaceId, workspaceId), eq(automations.id, id))!,
+  );
+  return deleted > 0;
 }
 
 export async function rotateAutomationSecret(
@@ -140,11 +144,15 @@ export async function rotateAutomationSecret(
 ): Promise<string | null> {
   if (!db) return null;
   const secret = randomBytes(24).toString("hex");
-  const [row] = await db
+  await db
     .update(automations)
     .set({ webhookSecret: secret, updatedAt: new Date() })
+    .where(and(eq(automations.workspaceId, workspaceId), eq(automations.id, id)));
+  const [row] = await db
+    .select({ webhookSecret: automations.webhookSecret })
+    .from(automations)
     .where(and(eq(automations.workspaceId, workspaceId), eq(automations.id, id)))
-    .returning({ webhookSecret: automations.webhookSecret });
+    .limit(1);
   return row?.webhookSecret ?? null;
 }
 

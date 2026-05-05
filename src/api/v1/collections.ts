@@ -3,7 +3,7 @@ import { computeEtag } from "@/api/runtime";
 import { CollectionResourceSchema, paginatedResponseSchema } from "@/api/schemas";
 import { db } from "@/db/client";
 import { collections, entries } from "@/db/schema";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 function serializeCollection(row: typeof collections.$inferSelect) {
   return {
@@ -51,10 +51,11 @@ export async function getCollectionHandler(input: {
     .limit(1);
   if (!row) throw notFound(`Colección ${input.params.slug} no existe`);
   // Incluye contador de entries
+  // F9b: contador refleja main, no incluye forks de branches.
   const countRows = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(entries)
-    .where(eq(entries.collectionId, row.id));
+    .where(and(eq(entries.collectionId, row.id), isNull(entries.branchId)));
   const count = countRows[0]?.count ?? 0;
   return {
     etag: computeEtag(row.id, row.updatedAt.toISOString(), count),

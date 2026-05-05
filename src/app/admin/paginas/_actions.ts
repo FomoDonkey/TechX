@@ -9,8 +9,10 @@ import {
   getPublishedPageByPath,
   updatePage,
 } from "@/lib/pages";
+import { httpUrlSchema } from "@/lib/safe-url";
 import { isUuid } from "@/lib/uuid";
 import { requireWorkspace } from "@/lib/workspace";
+import { getPageTemplate } from "@/templates/page-templates";
 import { emitAsync } from "@/webhooks/dispatcher";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -71,7 +73,7 @@ const SaveSchema = z.object({
     .object({
       title: z.string().max(120).optional(),
       description: z.string().max(280).optional(),
-      ogImage: z.string().url().optional(),
+      ogImage: httpUrlSchema().optional(),
     })
     .nullable()
     .optional(),
@@ -173,4 +175,52 @@ export async function checkPathAvailable(input: {
   const existing = await getPublishedPageByPath(ctx.workspace.id, input.pathToCheck);
   if (existing && existing.id !== input.excludeId) return { available: false };
   return { available: true };
+}
+
+/**
+ * F10b — crea una página nueva desde un template predefinido.
+ * El layout se construye fresh (ids nuevos por nodo) y el title sale del template.
+ */
+export async function createPageFromTemplateAction(formData: FormData): Promise<void> {
+  const user = await requireUser();
+  const ctx = await requireWorkspace("editor");
+  const templateId = String(formData.get("templateId") ?? "").trim();
+  const customTitle = String(formData.get("title") ?? "").trim();
+
+  const template = getPageTemplate(templateId);
+  if (!template) {
+    redirect("/admin/plantillas?error=template_no_encontrado");
+  }
+  const title = customTitle || template.suggestedTitle;
+  const layout = template.buildLayout();
+
+  try {
+    const created = await createPage({
+      workspaceId: ctx.workspace.id,
+      authorId: user.id,
+      title,
+      layout,
+    });
+    await logActivity({
+      workspaceId: ctx.workspace.id,
+      actorId: user.id,
+      action: "page.created_from_template",
+      targetType: "page",
+      targetId: created.id,
+      meta: { templateId, title },
+    });
+    revalidatePath("/admin/paginas");
+    redirect(`/admin/paginas/${created.id}`);
+  } catch (err) {
+    if (
+      err &&
+      typeof err === "object" &&
+      "digest" in err &&
+      String(err.digest).startsWith("NEXT_")
+    ) {
+      throw err;
+    }
+    const msg = err instanceof Error ? err.message : "create-failed";
+    redirect(`/admin/plantillas?error=${encodeURIComponent(msg.slice(0, 80))}`);
+  }
 }

@@ -1,3 +1,4 @@
+import { CookieConsent } from "@/components/cookie-consent";
 import { ThemeProvider } from "@/components/theme-provider";
 import { env } from "@/env";
 import { GeistMono } from "geist/font/mono";
@@ -73,6 +74,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeProvider>
           {children}
           <Toaster richColors position="top-right" closeButton />
+          <CookieConsent />
         </ThemeProvider>
       </body>
     </html>

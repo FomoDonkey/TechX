@@ -7,6 +7,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const config: NextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: __dirname,
+  // Build standalone para Docker — genera `.next/standalone/` con solo lo
+  // que necesita Node para arrancar (incluye node_modules trimmed). Hace
+  // que la imagen final sea ~150MB en lugar de >1GB. No afecta a Vercel.
+  output: "standalone",
   experimental: {
     serverActions: { bodySizeLimit: "10mb" },
     optimizePackageImports: ["lucide-react", "framer-motion"],

@@ -3,6 +3,7 @@ import { requireUser } from "@/auth/server";
 import { ActivityFeed } from "@/components/admin/dashboard/activity-feed";
 import { EmptyState } from "@/components/admin/dashboard/empty-state";
 import { HeroGreeting } from "@/components/admin/dashboard/hero-greeting";
+import { HotRightNow } from "@/components/admin/dashboard/hot-right-now";
 import { KpiCard } from "@/components/admin/dashboard/kpi-card";
 import { TopPosts } from "@/components/admin/dashboard/top-posts";
 import { Card } from "@/components/ui/card";
@@ -47,7 +48,7 @@ export default async function AdminHome() {
         <KpiCard
           label="Suscriptores"
           value={kpis.subscribersTotal}
-          hint="Newsletter en Fase 8"
+          hint="Newsletter + segmentos + Stripe"
           series={kpis.series.subscribers}
           icon={Mailbox}
           accent="brand-3"
@@ -55,7 +56,7 @@ export default async function AdminHome() {
         <KpiCard
           label="Comentarios"
           value={kpis.commentsTotal}
-          hint="Moderación AI en Fase 6"
+          hint="Moderación AI activa"
           series={kpis.series.comments}
           icon={MessageCircle}
           accent="accent"
@@ -63,12 +64,14 @@ export default async function AdminHome() {
         <KpiCard
           label="Vistas"
           value={kpis.viewsTotal}
-          hint="Analytics propias en Fase 10"
+          hint="Analytics propias · sin third-parties"
           series={kpis.series.views}
           icon={Eye}
           accent="primary"
         />
       </section>
+
+      <HotRightNow />
 
       {isEmpty ? (
         <EmptyState createPost={createNewPostFormAction} />
@@ -104,13 +107,17 @@ export default async function AdminHome() {
             </div>
           </Card>
           <Card className="p-5">
-            <h3 className="font-display text-base font-semibold">Próximas fases</h3>
-            <ul className="mt-3 space-y-1.5 text-sm text-muted-foreground">
-              <li>• Media Library + AI bg-removal (Fase 3)</li>
-              <li>• Page builder visual (Fase 4)</li>
-              <li>• 5 temas + SEO completo (Fase 5)</li>
-              <li>• Búsqueda semántica + Ask CSM (Fase 6)</li>
+            <h3 className="font-display text-base font-semibold">Activo en este admin</h3>
+            <ul className="mt-3 space-y-1 text-sm text-muted-foreground">
+              <li>• Realtime collab Y.js + presence global</li>
+              <li>• MCP server + Agente IA conversacional</li>
+              <li>• Content Health scan semanal</li>
+              <li>• Branching estilo Git + workflows + SLA</li>
+              <li>• Newsletter + Stripe paywall + A/B nativo</li>
             </ul>
+            <p className="mt-3 text-[11px] text-muted-foreground/70">
+              Próximo: Lighthouse 100x4 + PWA offline + RUM propio (F10d).
+            </p>
           </Card>
         </section>
       ) : null}

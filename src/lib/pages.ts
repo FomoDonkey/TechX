@@ -1,5 +1,6 @@
 import { type BlockNode, EMPTY_LAYOUT, normalizeLayout } from "@/blocks/types";
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Page, pages } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { isReservedSlug, slugify } from "@/lib/slug";
@@ -174,6 +175,8 @@ export type CreatePageInput = {
   title: string;
   path?: string;
   locale?: string;
+  /** Si está, sobreescribe el `EMPTY_LAYOUT` por defecto. Usado por los templates. */
+  layout?: unknown;
 };
 
 export async function createPage(input: CreatePageInput): Promise<Page> {
@@ -191,19 +194,18 @@ export async function createPage(input: CreatePageInput): Promise<Page> {
         ? await ensureUniquePagePath(input.workspaceId, basePath, locale)
         : `${basePath}-${attempt}-${Math.random().toString(36).slice(2, 6)}`;
     try {
-      const [created] = await db
-        .insert(pages)
-        .values({
-          workspaceId: input.workspaceId,
-          path,
-          title,
-          locale,
-          status: "draft",
-          layout: EMPTY_LAYOUT,
-          authorId: input.authorId,
-          updatedById: input.authorId,
-        })
-        .returning();
+      const id = crypto.randomUUID();
+      const created = (await insertReturning(pages, {
+        id,
+        workspaceId: input.workspaceId,
+        path,
+        title,
+        locale,
+        status: "draft",
+        layout: (input.layout ?? EMPTY_LAYOUT) as never,
+        authorId: input.authorId,
+        updatedById: input.authorId,
+      })) as Page;
       if (!created) throw new Error("No se pudo crear la página");
       await logActivity({
         workspaceId: input.workspaceId,
@@ -296,7 +298,10 @@ export async function updatePage(input: UpdatePageInput): Promise<Page> {
   // dentro de la misma transacción para garantizar consistencia (evita estado
   // donde no hay home si el segundo UPDATE falla, o donde hay 2 homes si race).
   // ne() excluye explícitamente al row actual del unset.
-  const [updated] = await db.transaction(async (tx) => {
+  // UPDATE + SELECT post-update porque MySQL no soporta UPDATE...RETURNING.
+  // En Postgres son 2 round-trips también dentro de la tx (acceptable):
+  // simplifica el código cross-dialect.
+  const updated = await db.transaction(async (tx) => {
     if (input.isHome === true) {
       await tx
         .update(pages)
@@ -310,11 +315,16 @@ export async function updatePage(input: UpdatePageInput): Promise<Page> {
           ),
         );
     }
-    return tx
+    await tx
       .update(pages)
       .set(patch)
+      .where(and(eq(pages.workspaceId, input.workspaceId), eq(pages.id, input.id)));
+    const [row] = await tx
+      .select()
+      .from(pages)
       .where(and(eq(pages.workspaceId, input.workspaceId), eq(pages.id, input.id)))
-      .returning();
+      .limit(1);
+    return row;
   });
   if (!updated) throw new Error("No se pudo actualizar la página");
   return updated;

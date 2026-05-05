@@ -1,8 +1,9 @@
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Entry, collections, entries, revisions, workspaces } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { slugify, withSuffix } from "@/lib/slug";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 export const POSTS_SLUG = "posts";
 export const PAGES_SLUG = "pages";
@@ -130,21 +131,21 @@ export async function createEntry(input: CreateEntryInput): Promise<Entry> {
         ? await ensureUniqueEntrySlug(input.workspaceId, input.collectionId, locale, baseSlug)
         : `${baseSlug}-${attempt}-${Math.random().toString(36).slice(2, 6)}`;
     try {
-      const [created] = await db
-        .insert(entries)
-        .values({
-          workspaceId: input.workspaceId,
-          collectionId: input.collectionId,
-          title,
-          slug,
-          locale,
-          status: "draft",
-          body: EMPTY_DOC as unknown as Record<string, unknown>,
-          bodyText: "",
-          authorId: input.authorId,
-          updatedById: input.authorId,
-        })
-        .returning();
+      // ID generado app-side para compatibilidad MySQL (no soporta RETURNING).
+      const id = crypto.randomUUID();
+      const created = (await insertReturning(entries, {
+        id,
+        workspaceId: input.workspaceId,
+        collectionId: input.collectionId,
+        title,
+        slug,
+        locale,
+        status: "draft",
+        body: EMPTY_DOC as unknown as Record<string, unknown>,
+        bodyText: "",
+        authorId: input.authorId,
+        updatedById: input.authorId,
+      })) as Entry;
       if (!created) throw new Error("No se pudo crear la entrada");
 
       await logActivity({
@@ -188,6 +189,7 @@ export async function listEntries(filter: EntryListFilter): Promise<{
         all: 0,
         draft: 0,
         review: 0,
+        approved: 0,
         scheduled: 0,
         published: 0,
         archived: 0,
@@ -209,6 +211,7 @@ export async function listEntries(filter: EntryListFilter): Promise<{
         all: 0,
         draft: 0,
         review: 0,
+        approved: 0,
         scheduled: 0,
         published: 0,
         archived: 0,
@@ -216,9 +219,13 @@ export async function listEntries(filter: EntryListFilter): Promise<{
     };
   }
 
+  // F9b: el listing admin sólo muestra entries de main por defecto. Las entries
+  // forkeadas en branches se ven desde /admin/branches/[id]. Esto evita que
+  // bulk actions (publish/delete/etc) operen accidentalmente sobre forks.
   const baseWhere = [
     eq(entries.workspaceId, filter.workspaceId),
     eq(entries.collectionId, collectionId),
+    isNull(entries.branchId),
   ];
   const where =
     filter.status && filter.status !== "all"
@@ -270,6 +277,7 @@ export async function listEntries(filter: EntryListFilter): Promise<{
     all: 0,
     draft: 0,
     review: 0,
+    approved: 0,
     scheduled: 0,
     published: 0,
     archived: 0,
@@ -312,6 +320,8 @@ export async function getPublishedPostBySlug(
         eq(collections.slug, POSTS_SLUG),
         eq(entries.slug, postSlug),
         eq(entries.status, "published"),
+        // F9b: nunca servir un fork de branch en el sitio público.
+        isNull(entries.branchId),
       ),
     )
     .limit(1);
@@ -346,6 +356,8 @@ export async function listPublishedPostsForWorkspace(
         eq(workspaces.slug, workspaceSlug),
         eq(collections.slug, POSTS_SLUG),
         eq(entries.status, "published"),
+        // F9b: el listado público nunca incluye forks de branches.
+        isNull(entries.branchId),
       ),
     )
     .orderBy(desc(entries.publishedAt))
@@ -379,8 +391,28 @@ export async function listLatestRevisions(entryId: string, limit = 20) {
     .limit(limit);
 }
 
-export async function getRevision(id: string) {
+/**
+ * Lee una revisión validando que pertenece a una entry del workspace dado.
+ * Defense-in-depth: aunque el caller principal (`restoreRevisionAction`) ya
+ * compara `rev.entryId` contra una entry del workspace activo, este helper
+ * está exportado para futuros consumidores (CLI, GraphQL, REST). Sin el JOIN
+ * por workspace, un caller que confíe ciegamente en este resultado podría
+ * leakear contenido entre tenants.
+ */
+export async function getRevision(id: string, workspaceId: string) {
   if (!db) return null;
-  const [row] = await db.select().from(revisions).where(eq(revisions.id, id)).limit(1);
+  const [row] = await db
+    .select({
+      id: revisions.id,
+      entryId: revisions.entryId,
+      body: revisions.body,
+      summary: revisions.summary,
+      authorId: revisions.authorId,
+      createdAt: revisions.createdAt,
+    })
+    .from(revisions)
+    .innerJoin(entries, eq(entries.id, revisions.entryId))
+    .where(and(eq(revisions.id, id), eq(entries.workspaceId, workspaceId)))
+    .limit(1);
   return row ?? null;
 }

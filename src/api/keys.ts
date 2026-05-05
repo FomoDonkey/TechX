@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { db } from "@/db/client";
 import { apiKeyAudit, apiKeys } from "@/db/schema";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import { env } from "@/env";
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 
@@ -322,21 +323,20 @@ export async function createApiKey(input: {
 }) {
   if (!db) throw new Error("DB no disponible");
   const { fullKey, prefix, hash, environment } = generateKey(input.environment ?? "live");
-  const [inserted] = await db
-    .insert(apiKeys)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      description: input.description ?? null,
-      prefix,
-      hash,
-      environment,
-      scopes: input.scopes.length > 0 ? input.scopes : ["*:read"],
-      rateLimit: input.rateLimit ?? 1000,
-      expiresAt: input.expiresAt ?? null,
-      createdById: input.createdById ?? null,
-    })
-    .returning({ id: apiKeys.id });
+  const id = crypto.randomUUID();
+  const inserted = (await insertReturning(apiKeys, {
+    id,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    description: input.description ?? null,
+    prefix,
+    hash,
+    environment,
+    scopes: input.scopes.length > 0 ? input.scopes : ["*:read"],
+    rateLimit: input.rateLimit ?? 1000,
+    expiresAt: input.expiresAt ?? null,
+    createdById: input.createdById ?? null,
+  })) as typeof apiKeys.$inferSelect;
   if (!inserted) throw new Error("No se pudo crear la API key");
   return { id: inserted.id, prefix, fullKey };
 }
@@ -355,22 +355,21 @@ export async function rotateApiKey(workspaceId: string, id: string) {
     .set({ expiresAt: grace })
     .where(and(eq(apiKeys.id, id), eq(apiKeys.workspaceId, workspaceId)));
 
-  const [created] = await db
-    .insert(apiKeys)
-    .values({
-      workspaceId,
-      name: `${existing.name} (rotada)`,
-      description: existing.description,
-      prefix,
-      hash,
-      environment,
-      scopes: existing.scopes ?? ["*:read"],
-      rateLimit: existing.rateLimit,
-      expiresAt: existing.expiresAt,
-      createdById: existing.createdById,
-      rotatedFromId: existing.id,
-    })
-    .returning({ id: apiKeys.id });
+  const newId = crypto.randomUUID();
+  const created = (await insertReturning(apiKeys, {
+    id: newId,
+    workspaceId,
+    name: `${existing.name} (rotada)`,
+    description: existing.description,
+    prefix,
+    hash,
+    environment,
+    scopes: existing.scopes ?? ["*:read"],
+    rateLimit: existing.rateLimit,
+    expiresAt: existing.expiresAt,
+    createdById: existing.createdById,
+    rotatedFromId: existing.id,
+  })) as typeof apiKeys.$inferSelect;
 
   invalidateKeyCache(existing.prefix);
   if (!created) throw new Error("No se pudo rotar la API key");
@@ -425,11 +424,10 @@ export async function resetDailyCounters() {
 export async function pruneExpiredKeys() {
   if (!db) return 0;
   const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const deleted = await db
-    .delete(apiKeys)
-    .where(and(lt(apiKeys.expiresAt, cutoff), isNull(apiKeys.revokedAt)))
-    .returning({ id: apiKeys.id });
-  return deleted.length;
+  return await deleteReturningCount(
+    apiKeys,
+    and(lt(apiKeys.expiresAt, cutoff), isNull(apiKeys.revokedAt))!,
+  );
 }
 
 // Re-export para evitar warnings de "imports no usados"

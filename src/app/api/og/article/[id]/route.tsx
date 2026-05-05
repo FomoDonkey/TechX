@@ -3,7 +3,7 @@ import { entries, users, workspaces } from "@/db/schema";
 import { renderOg } from "@/lib/og";
 import { isUuid } from "@/lib/uuid";
 import { resolveActiveTheme } from "@/themes/active";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 export const runtime = "nodejs";
 export const revalidate = 3600;
@@ -40,8 +40,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       .from(entries)
       .leftJoin(users, eq(users.id, entries.authorId))
       .leftJoin(workspaces, eq(workspaces.id, entries.workspaceId))
-      // Solo entries publicados — los drafts no deben filtrar título via OG.
-      .where(and(eq(entries.id, id), eq(entries.status, "published")))
+      // Solo entries publicados de main — drafts y forks no deben filtrar título via OG.
+      .where(and(eq(entries.id, id), eq(entries.status, "published"), isNull(entries.branchId)))
       .limit(1);
     if (!row) {
       return renderOg({

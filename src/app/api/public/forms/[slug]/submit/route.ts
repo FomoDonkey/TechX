@@ -16,6 +16,7 @@ import { getPublishedFormBySlug } from "@/forms/lib";
 import { consumeSubmitRateLimit } from "@/forms/rate-limit";
 import { getDefaultRateLimits, hashIp, processSubmission } from "@/forms/submit";
 import type { FormSettings } from "@/forms/types";
+import { resolveWorkspaceIdByHost } from "@/redirects/runtime";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,18 @@ const MAX_BODY = 256 * 1024;
 
 export async function POST(req: Request, ctx: { params: Promise<{ slug: string }> }) {
   const { slug } = await ctx.params;
-  const form = await getPublishedFormBySlug(slug);
+  // Resolver workspace por host evita cross-tenant lookup: dos workspaces
+  // pueden tener forms con el mismo slug ("contact") y sin host check
+  // resolvía cualquiera. F0-F9a audit catch.
+  const host = req.headers.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  if (!workspaceId) {
+    return NextResponse.json(
+      { error: { code: "not_found", message: "Form no encontrado" } },
+      { status: 404, headers: corsHeaders(null) },
+    );
+  }
+  const form = await getPublishedFormBySlug(workspaceId, slug);
   if (!form) {
     return NextResponse.json(
       { error: { code: "not_found", message: "Form no encontrado" } },
@@ -130,11 +142,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
         { status: 201, headers: corsHeaders(form) },
       );
     case "duplicate":
+      // Anti info-leak: NO devolvemos `submissionId` ni `duplicate: true` para
+      // no revelar a un atacante que un email/dato ya estaba registrado en el
+      // formulario. La response es indistinguible de un success.
       return NextResponse.json(
         {
           ok: true,
-          submissionId: out.submissionId,
-          duplicate: true,
           message: form.successMessage ?? "¡Gracias!",
         },
         { status: 200, headers: corsHeaders(form) },
@@ -194,9 +207,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
   }
 }
 
-export async function OPTIONS(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function OPTIONS(req: Request, ctx: { params: Promise<{ slug: string }> }) {
   const { slug } = await ctx.params;
-  const form = await getPublishedFormBySlug(slug);
+  const host = req.headers.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  const form = workspaceId ? await getPublishedFormBySlug(workspaceId, slug) : null;
   return new Response(null, { status: 204, headers: corsHeaders(form) });
 }
 

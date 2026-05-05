@@ -7,6 +7,7 @@
 
 import { getPublishedFormBySlug } from "@/forms/lib";
 import { confirmSubmission } from "@/forms/submit";
+import { resolveWorkspaceIdByHost } from "@/redirects/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ slug: string }>
   const { slug } = await ctx.params;
   const url = new URL(req.url);
   const token = url.searchParams.get("token") ?? "";
-  const form = await getPublishedFormBySlug(slug);
+  const host = req.headers.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  const form = workspaceId ? await getPublishedFormBySlug(workspaceId, slug) : null;
   if (!form) return htmlResponse("Form no encontrado", 404);
 
   if (!token) return htmlResponse("Falta el token de confirmación", 400);

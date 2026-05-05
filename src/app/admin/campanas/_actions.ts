@@ -121,13 +121,15 @@ export async function updateCampaignAction(input: z.input<typeof UpdateSchema>) 
 export async function deleteCampaignAction(input: { id: string }) {
   const user = await requireUser();
   const ctx = await requireWorkspace("admin");
-  const ok = await deleteCampaign(ctx.workspace.id, input.id);
+  const idP = z.string().uuid().safeParse(input.id);
+  if (!idP.success) return { ok: false as const, error: "invalid_id" };
+  const ok = await deleteCampaign(ctx.workspace.id, idP.data);
   await logActivity({
     workspaceId: ctx.workspace.id,
     actorId: user.id,
     action: "campaign.deleted",
     targetType: "campaign",
-    targetId: input.id,
+    targetId: idP.data,
   });
   revalidatePath("/admin/campanas");
   return { ok };
@@ -143,6 +145,15 @@ export async function sendTestCampaignAction(input: z.input<typeof SendTestSchem
   const ctx = await requireWorkspace("editor");
   const parsed = SendTestSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "invalid_input" };
+
+  // Rate-limit anti-mailbomb: 20 test sends/hora por (user, workspace).
+  // Sin esto, un editor comprometido podía spam-enviar emails verificados
+  // a una víctima usando el dominio Resend del workspace (audit F0-F9a).
+  const { consume } = await import("@/api/rate-limit");
+  const rl = consume(`campaign:test:${ctx.workspace.id}:${user.id}`, 20, 60 * 60 * 1000);
+  if (!rl.ok) {
+    return { ok: false as const, error: "rate_limited" };
+  }
 
   const campaign = await getCampaign(ctx.workspace.id, parsed.data.id);
   if (!campaign) return { ok: false as const, error: "not_found" };

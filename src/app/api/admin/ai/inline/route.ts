@@ -1,5 +1,7 @@
 import { type AIAction, buildPrompt } from "@/ai/prompts";
 import { chatStream } from "@/ai/provider";
+import { checkAiBudget, recordAiUsage } from "@/ai/usage";
+import { requireUser } from "@/auth/server";
 import { requireWorkspace } from "@/lib/workspace";
 import { NextResponse } from "next/server";
 
@@ -30,10 +32,31 @@ type Body = {
 };
 
 export async function POST(req: Request) {
+  let workspaceId: string;
+  let userId: string;
   try {
-    await requireWorkspace("author");
+    const user = await requireUser();
+    const ctx = await requireWorkspace("author");
+    workspaceId = ctx.workspace.id;
+    userId = user.id;
   } catch {
     return new NextResponse("Unauthorized", { status: 401 });
+  }
+
+  // Pre-flight budget check — bloquea ANTES de gastar tokens al provider.
+  const budget = await checkAiBudget({ workspaceId, userId, feature: "inline" });
+  if (!budget.ok) {
+    const reason =
+      budget.reason === "user_daily_cap"
+        ? "Has llegado a tu cuota diaria de IA. Vuelve mañana."
+        : "El workspace agotó su presupuesto de IA del mes.";
+    return new NextResponse(JSON.stringify({ error: "ai_quota", message: reason }), {
+      status: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "Retry-After": String(budget.retryAfterSeconds),
+      },
+    });
   }
 
   let body: Body;
@@ -54,6 +77,17 @@ export async function POST(req: Request) {
     selection,
     context,
     targetLang: body.targetLang,
+  });
+
+  // Estimación conservadora de coste: 0.005 USD = 5_000 micros por call de
+  // inline (Claude Haiku ~$0.0008 input + $0.004 output con maxTokens=1024).
+  // F10d cambiará a coste real cuando el provider devuelva tokens consumidos.
+  const ESTIMATED_COST_MICROS = 5_000;
+  await recordAiUsage({
+    workspaceId,
+    userId,
+    feature: "inline",
+    costMicrosUsd: ESTIMATED_COST_MICROS,
   });
 
   const encoder = new TextEncoder();

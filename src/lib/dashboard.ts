@@ -10,7 +10,7 @@ import {
   users,
 } from "@/db/schema";
 import { POSTS_SLUG } from "@/lib/entries";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 
 export type Series = number[];
 
@@ -115,7 +115,8 @@ export async function loadDashboardKpis(workspaceId: string): Promise<DashboardK
     db
       .select({ status: entries.status, n: sql<number>`count(*)::int` })
       .from(entries)
-      .where(eq(entries.workspaceId, workspaceId))
+      // F9b: KPIs sólo cuentan main, no forks de branches.
+      .where(and(eq(entries.workspaceId, workspaceId), isNull(entries.branchId)))
       .groupBy(entries.status),
     db
       .select({ n: sql<number>`count(*)::int` })
@@ -140,7 +141,14 @@ export async function loadDashboardKpis(workspaceId: string): Promise<DashboardK
         n: sql<number>`count(*)::int`,
       })
       .from(entries)
-      .where(and(eq(entries.workspaceId, workspaceId), gte(entries.createdAt, since)))
+      .where(
+        and(
+          eq(entries.workspaceId, workspaceId),
+          gte(entries.createdAt, since),
+          // F9b: serie de creación sólo cuenta main.
+          isNull(entries.branchId),
+        ),
+      )
       .groupBy(sql`1`),
     db
       .select({
@@ -243,6 +251,8 @@ export async function loadTopPosts(workspaceId: string, limit = 5): Promise<TopP
         eq(entries.workspaceId, workspaceId),
         eq(collections.slug, POSTS_SLUG),
         eq(entries.status, "published"),
+        // F9b: top posts del dashboard ignora forks de branches.
+        isNull(entries.branchId),
       ),
     )
     .orderBy(desc(entries.publishedAt))

@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Collection, collections, entries } from "@/db/schema";
 import { type CollectionSchema, readCollectionSchema } from "@/lib/fields";
 import { isReservedSlug, slugify, withSuffix } from "@/lib/slug";
@@ -39,9 +40,11 @@ export async function listCollections(workspaceId: string): Promise<CollectionLi
       isSingleton: collections.isSingleton,
       isBuiltin: collections.isBuiltin,
       createdAt: collections.createdAt,
+      // F9b: contadores reflejan main (excluye forks de branches).
       entryCount: sql<number>`(
         SELECT count(*)::int FROM ${entries}
         WHERE ${entries.collectionId} = ${collections.id}
+          AND ${entries.branchId} IS NULL
       )`,
     })
     .from(collections)
@@ -125,19 +128,18 @@ export async function createCollection(input: CreateCollectionInput): Promise<Co
         ? await ensureUniqueCollectionSlug(input.workspaceId, baseSlug)
         : `${baseSlug}-${attempt}-${Math.random().toString(36).slice(2, 6)}`;
     try {
-      const [created] = await db
-        .insert(collections)
-        .values({
-          workspaceId: input.workspaceId,
-          name,
-          slug,
-          icon: input.icon ?? "layers",
-          description: input.description ?? null,
-          isSingleton: input.isSingleton ?? false,
-          isBuiltin: false,
-          schema: input.schema ?? { fields: [] },
-        })
-        .returning();
+      const id = crypto.randomUUID();
+      const created = (await insertReturning(collections, {
+        id,
+        workspaceId: input.workspaceId,
+        name,
+        slug,
+        icon: input.icon ?? "layers",
+        description: input.description ?? null,
+        isSingleton: input.isSingleton ?? false,
+        isBuiltin: false,
+        schema: input.schema ?? { fields: [] },
+      })) as Collection;
       if (!created) throw new Error("No se pudo crear la colección");
       return created;
     } catch (err) {
@@ -168,11 +170,16 @@ export async function updateCollection(input: UpdateCollectionInput): Promise<Co
   if (input.isSingleton !== undefined) patch.isSingleton = input.isSingleton;
   if (input.schema !== undefined) patch.schema = input.schema;
 
-  const [updated] = await db
+  // UPDATE + SELECT post-update (MySQL no soporta UPDATE...RETURNING).
+  await db
     .update(collections)
     .set(patch)
+    .where(and(eq(collections.workspaceId, input.workspaceId), eq(collections.id, input.id)));
+  const [updated] = await db
+    .select()
+    .from(collections)
     .where(and(eq(collections.workspaceId, input.workspaceId), eq(collections.id, input.id)))
-    .returning();
+    .limit(1);
   if (!updated) throw new Error("Colección no encontrada");
   return updated;
 }

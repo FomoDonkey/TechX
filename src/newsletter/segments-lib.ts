@@ -3,6 +3,7 @@
  */
 
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import { type Segment, type Subscriber, segments, subscribers } from "@/db/schema";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { type SegmentRulesPayload, matchesRule, validateRule } from "./segments";
@@ -30,14 +31,13 @@ export async function createSegment(input: {
   if (!db) return { ok: false, error: "db_error" };
   const validated = validateRule(input.rules ?? null);
   if (!validated.ok) return { ok: false, error: validated.error };
-  const [row] = await db
-    .insert(segments)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      rules: (validated.rule ?? null) as never,
-    })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(segments, {
+    id,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    rules: (validated.rule ?? null) as never,
+  })) as Segment;
   if (!row) return { ok: false, error: "db_error" };
   return { ok: true, segment: row };
 }
@@ -60,22 +60,26 @@ export async function updateSegment(
     if (!existing) return { ok: false, error: "not_found" };
     return { ok: true, segment: existing };
   }
-  const [row] = await db
+  await db
     .update(segments)
     .set(updates)
+    .where(and(eq(segments.workspaceId, workspaceId), eq(segments.id, id)));
+  const [row] = await db
+    .select()
+    .from(segments)
     .where(and(eq(segments.workspaceId, workspaceId), eq(segments.id, id)))
-    .returning();
+    .limit(1);
   if (!row) return { ok: false, error: "not_found" };
   return { ok: true, segment: row };
 }
 
 export async function deleteSegment(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const result = await db
-    .delete(segments)
-    .where(and(eq(segments.workspaceId, workspaceId), eq(segments.id, id)))
-    .returning({ id: segments.id });
-  return result.length > 0;
+  const count = await deleteReturningCount(
+    segments,
+    and(eq(segments.workspaceId, workspaceId), eq(segments.id, id))!,
+  );
+  return count > 0;
 }
 
 /**

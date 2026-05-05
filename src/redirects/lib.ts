@@ -6,8 +6,9 @@
  */
 
 import { db } from "@/db/client";
+import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import { type NewRedirect, type Redirect, redirects } from "@/db/schema";
-import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { type RedirectRule, isSelfReferential } from "./matcher";
 
 export type MatchType = "exact" | "prefix" | "regex";
@@ -26,6 +27,30 @@ export interface CreateRedirectInput {
 
 const VALID_STATUS_CODES = [301, 302, 307, 308] as const;
 
+/**
+ * Whitelist de protocolos seguros en `destination`.
+ *
+ * Acepta: http(s)://, /, # (anchor), mailto:, tel:.
+ * Bloquea: javascript:, data:, file:, vbscript:, ftp:, etc.
+ *
+ * Nota: en `matchType=regex`, el destination puede contener placeholders `$1`
+ * etc. que se sustituyen en runtime; aún así rechazamos protocolos peligrosos
+ * literales en el patrón.
+ */
+function isSafeDestination(dest: string): boolean {
+  if (typeof dest !== "string" || !dest) return false;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: anti-XSS — bloquea control chars.
+  if (/[\x00-\x1f\x7f]/.test(dest)) return false;
+  if (/^\s/.test(dest)) return false;
+  if (dest.startsWith("//") || dest.startsWith("/\\")) return false;
+  if (/^https?:\/\//i.test(dest)) return true;
+  if (/^mailto:/i.test(dest)) return true;
+  if (/^tel:/i.test(dest)) return true;
+  if (dest.startsWith("/") && !dest.includes("\\")) return true;
+  if (dest.startsWith("#")) return true;
+  return false;
+}
+
 function validateRule(input: {
   source: string;
   destination: string;
@@ -34,6 +59,9 @@ function validateRule(input: {
 }) {
   if (!input.source || input.source.length > 2048) throw new Error("Origen inválido");
   if (!input.destination || input.destination.length > 2048) throw new Error("Destino inválido");
+  if (!isSafeDestination(input.destination)) {
+    throw new Error("Destino con protocolo no permitido (sólo http(s):, /, #, mailto:, tel:)");
+  }
   if (input.statusCode && !VALID_STATUS_CODES.includes(input.statusCode as 301)) {
     throw new Error("Status code debe ser 301/302/307/308");
   }
@@ -47,10 +75,34 @@ function validateRule(input: {
     if (input.source.length > 256) {
       throw new Error("RegExp demasiado larga (máx 256 chars)");
     }
-    // Heurística anti-ReDoS: rechaza patrones con quantifiers anidados
-    // del tipo `(a+)+`, `(a*)*`, `(a+)*` que disparan backtracking catastrófico.
+    // Heurística anti-ReDoS reforzada (audit F0-F9a layer 3 detectó bypass):
+    //  1) Whitelist estricta de caracteres permitidos en la regex.
+    //  2) Rechaza CUALQUIER paréntesis anidado, cubre casos como `((a+))+`,
+    //     `(a|aa)+`, `(((a*))*)?` que la heurística previa NO atrapaba.
+    //  3) Rechaza alternancia con cuantificador externo `(...|...)+/*` que
+    //     también es vector clásico (Catastrophic Backtracking de "evil regex").
+    if (!/^[A-Za-z0-9\-/_$.()|\[\]^?*+\\]+$/.test(input.source)) {
+      throw new Error("RegExp contiene caracteres no permitidos");
+    }
+    // Cuenta paréntesis abiertos sin cerrar para detectar anidamiento.
+    let depth = 0;
+    for (const c of input.source) {
+      if (c === "(") {
+        depth += 1;
+        if (depth > 1) {
+          throw new Error("RegExp con paréntesis anidados — riesgo de ReDoS");
+        }
+      } else if (c === ")") {
+        depth -= 1;
+      }
+    }
+    // Heurística previa (mantiene defensa-en-profundidad sobre paréntesis simples).
     if (/\([^)]*[+*][^)]*\)[+*]/.test(input.source)) {
-      throw new Error("RegExp con quantifiers anidados — riesgo de ReDoS");
+      throw new Error("RegExp con cuantificadores anidados — riesgo de ReDoS");
+    }
+    // Alternancia con cuantificador externo: (a|b)+
+    if (/\([^)]*\|[^)]*\)[+*]/.test(input.source)) {
+      throw new Error("RegExp con alternancia cuantificada — riesgo de ReDoS");
     }
     try {
       new RegExp(input.source);
@@ -128,20 +180,19 @@ export async function getRedirectById(workspaceId: string, id: string): Promise<
 export async function createRedirect(input: CreateRedirectInput): Promise<Redirect> {
   if (!db) throw new Error("DB not configured");
   validateRule(input);
-  const [row] = await db
-    .insert(redirects)
-    .values({
-      workspaceId: input.workspaceId,
-      source: input.source,
-      destination: input.destination,
-      statusCode: input.statusCode ?? 301,
-      matchType: input.matchType ?? "exact",
-      preserveQuery: input.preserveQuery ?? true,
-      enabled: input.enabled ?? true,
-      description: input.description ?? null,
-      createdById: input.createdById ?? null,
-    } satisfies NewRedirect)
-    .returning();
+  const newId = crypto.randomUUID();
+  const row = (await insertReturning(redirects, {
+    id: newId,
+    workspaceId: input.workspaceId,
+    source: input.source,
+    destination: input.destination,
+    statusCode: input.statusCode ?? 301,
+    matchType: input.matchType ?? "exact",
+    preserveQuery: input.preserveQuery ?? true,
+    enabled: input.enabled ?? true,
+    description: input.description ?? null,
+    createdById: input.createdById ?? null,
+  })) as Redirect;
   if (!row) throw new Error("No se pudo crear la redirección");
   return row;
 }
@@ -169,11 +220,15 @@ export async function updateRedirect(input: UpdateRedirectInput): Promise<Redire
   if (input.preserveQuery !== undefined) patch.preserveQuery = input.preserveQuery;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.description !== undefined) patch.description = input.description;
-  const [row] = await db
+  await db
     .update(redirects)
     .set(patch)
+    .where(and(eq(redirects.workspaceId, input.workspaceId), eq(redirects.id, input.id)));
+  const [row] = await db
+    .select()
+    .from(redirects)
     .where(and(eq(redirects.workspaceId, input.workspaceId), eq(redirects.id, input.id)))
-    .returning();
+    .limit(1);
   if (!row) throw new Error("Redirección no encontrada");
   return row;
 }
@@ -187,11 +242,10 @@ export async function deleteRedirect(workspaceId: string, id: string): Promise<v
 
 export async function bulkDeleteRedirects(workspaceId: string, ids: string[]): Promise<number> {
   if (!db || ids.length === 0) return 0;
-  const result = await db
-    .delete(redirects)
-    .where(and(eq(redirects.workspaceId, workspaceId), inArray(redirects.id, ids)))
-    .returning({ id: redirects.id });
-  return result.length;
+  return await deleteReturningCount(
+    redirects,
+    and(eq(redirects.workspaceId, workspaceId), inArray(redirects.id, ids))!,
+  );
 }
 
 export async function bulkSetEnabled(
@@ -200,12 +254,12 @@ export async function bulkSetEnabled(
   enabled: boolean,
 ): Promise<number> {
   if (!db || ids.length === 0) return 0;
-  const result = await db
-    .update(redirects)
-    .set({ enabled, updatedAt: new Date() })
-    .where(and(eq(redirects.workspaceId, workspaceId), inArray(redirects.id, ids)))
-    .returning({ id: redirects.id });
-  return result.length;
+  // Pattern C cross-dialect: SELECT-then-UPDATE para obtener count.
+  const where = and(eq(redirects.workspaceId, workspaceId), inArray(redirects.id, ids))!;
+  const matched = await db.select({ id: redirects.id }).from(redirects).where(where);
+  if (matched.length === 0) return 0;
+  await db.update(redirects).set({ enabled, updatedAt: new Date() }).where(where);
+  return matched.length;
 }
 
 /** Atómico: incrementa hits y actualiza lastHitAt. Idempotente bajo concurrencia. */

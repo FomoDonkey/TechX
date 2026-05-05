@@ -1,0 +1,70 @@
+# ============================================================
+# CSM — Override para MySQL 8.4 (BD principal alternativa)
+# ============================================================
+#
+# CSM soporta MySQL 8.4+ desde Tarea 9 (multi-dialect):
+#   - schema.mysql.ts (paralelo a schema.pg.ts)
+#   - dialect helpers cross-DB (insertReturning, upsertReturning, atomicClaim,
+#     ilike, vector helpers)
+#   - FTS adapter con MATCH...AGAINST IN BOOLEAN MODE
+#   - Vector search con MySQL 9 VECTOR (MySQL 8.4 → fallback Qdrant external)
+#   - Pubsub con Redis (LISTEN/NOTIFY no existe en MySQL — usar Redis)
+#
+# **Limitaciones MySQL vs Postgres:**
+#  - Vector search nativo requiere MySQL 9+. En 8.4 → usar Qdrant (REDIS_URL).
+#  - Pubsub: NO usa LISTEN/NOTIFY. Configura REDIS_URL para multi-instance.
+#  - FTS tokenizer básico (stopwords + min_token_size). Para mejor calidad:
+#    `innodb_ft_min_token_size=2` (default 3) en my.cnf.
+#
+# Uso (MySQL como BD principal en lugar de Postgres):
+#   1. NO levantes el servicio postgres (usa profile o saca el bloque):
+#      docker compose -f docker-compose.mysql.yml up -d mysql
+#   2. Set `DATABASE_URL=mysql://csm:PASS@mysql:3306/csm` en .env
+#   3. Set `REDIS_URL=redis://...` para pubsub cross-instance.
+#
+# Uso paralelo (probar ambas BDs simultáneamente para CI/dev):
+#   docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d
+#
+# El servicio MySQL queda accesible solo en la red interna `csm_net`.
+# Para exponerlo al host (DBeaver, MySQL Workbench), añade en
+# `docker-compose.override.yml`:
+#   services:
+#     mysql:
+#       ports: ["127.0.0.1:3306:3306"]
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: always
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_USER: ${MYSQL_USER:-csm}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Define MYSQL_PASSWORD en .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-csm}
+      # Necesario para MySQL aunque no usemos root desde fuera
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Define MYSQL_ROOT_PASSWORD en .env}
+    volumes:
+      - csm_mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        - "CMD"
+        - "mysqladmin"
+        - "ping"
+        - "-h"
+        - "localhost"
+        - "-u"
+        - "${MYSQL_USER:-csm}"
+        - "--password=${MYSQL_PASSWORD}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - csm_net
+
+volumes:
+  csm_mysql_data:
+    driver: local

@@ -7,6 +7,7 @@
  */
 
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Menu, type NewMenu, collections, menus, pages } from "@/db/schema";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -88,19 +89,18 @@ export async function createMenu(input: CreateMenuInput): Promise<Menu> {
       .set({ isDefault: false })
       .where(and(eq(menus.workspaceId, input.workspaceId), eq(menus.location, input.location)));
   }
-  const [row] = await db
-    .insert(menus)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      slug: input.slug,
-      description: input.description ?? null,
-      location: input.location,
-      items: items as unknown as NewMenu["items"],
-      isDefault: input.isDefault ?? false,
-      createdById: input.createdById ?? null,
-    })
-    .returning();
+  const newId = crypto.randomUUID();
+  const row = (await insertReturning(menus, {
+    id: newId,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    slug: input.slug,
+    description: input.description ?? null,
+    location: input.location,
+    items: items as unknown as NewMenu["items"],
+    isDefault: input.isDefault ?? false,
+    createdById: input.createdById ?? null,
+  })) as Menu;
   if (!row) throw new Error("No se pudo crear el menú");
   return row;
 }
@@ -139,11 +139,15 @@ export async function updateMenu(input: UpdateMenuInput): Promise<Menu> {
       }
     }
   }
-  const [row] = await db
+  await db
     .update(menus)
     .set(patch)
+    .where(and(eq(menus.workspaceId, input.workspaceId), eq(menus.id, input.id)));
+  const [row] = await db
+    .select()
+    .from(menus)
     .where(and(eq(menus.workspaceId, input.workspaceId), eq(menus.id, input.id)))
-    .returning();
+    .limit(1);
   if (!row) throw new Error("Menú no encontrado");
   return row;
 }

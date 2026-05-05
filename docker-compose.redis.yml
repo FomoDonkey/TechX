@@ -1,0 +1,77 @@
+# ============================================================
+# CSM — Override para Redis 7 (pubsub cross-instance)
+# ============================================================
+#
+# Cuándo usar Redis:
+#  - Multi-instancia con DB=MySQL (sin LISTEN/NOTIFY).
+#  - Multi-instancia con DB=Postgres pero quieres separar el tráfico de
+#    pubsub/presence/collab del traffic OLTP de la BD.
+#  - Despliegues multi-region donde el DB pueda estar lejos pero Redis cerca.
+#
+# Single-instance (1 réplica): NO necesitas Redis. El pubsub in-memory del
+# proceso basta. Si DB=Postgres, LISTEN/NOTIFY funciona también para 1+
+# instancias sin Redis.
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d
+#
+# Combinado con MySQL (multi-DB testing):
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.mysql.yml \
+#     -f docker-compose.redis.yml up -d
+#
+# El servicio Redis queda accesible solo en la red interna `csm_net`.
+# Para exponerlo al host (redis-cli, RedisInsight), añade en
+# `docker-compose.override.yml`:
+#   services:
+#     redis:
+#       ports: ["127.0.0.1:6379:6379"]
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    # `--requirepass` cifra TODAS las conexiones — sin password, cualquier
+    # contenedor en la misma red podría leer/escribir. CSM lo necesita en
+    # `REDIS_URL=redis://:PASS@redis:6379`.
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?Define REDIS_PASSWORD en .env}"
+      - "--save"
+      - "60"
+      - "1000"
+      - "--appendonly"
+      - "no"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    volumes:
+      - csm_redis_data:/data
+    healthcheck:
+      test:
+        - "CMD"
+        - "redis-cli"
+        - "-a"
+        - "${REDIS_PASSWORD}"
+        - "PING"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - csm_net
+
+  # Override: el servicio `csm` recibe REDIS_URL y depends_on Redis healthy.
+  # Compose hace deep-merge — esto se suma al `csm` base sin reemplazarlo.
+  csm:
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  csm_redis_data:
+    driver: local

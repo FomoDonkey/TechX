@@ -10,6 +10,7 @@
  * Si no hay claves → mock determinista (mockChat).
  */
 
+import { type AiProviderId, getAiProviderConfig } from "@/ai/keys";
 import { env } from "@/env";
 
 export type ChatProvider = "groq" | "anthropic" | "openai" | "mistral" | "ollama" | "mock";
@@ -26,6 +27,16 @@ export type ChatArgs = {
   maxTokens?: number;
   /** Si se especifica, fuerza el provider; si no, auto-detect. */
   provider?: ChatProvider;
+  /**
+   * Override de credenciales por workspace. Si está, ignora env vars y
+   * usa estas — permite que cada workspace use su propia key configurada
+   * desde `/admin/ajustes/ia`. Resuelto vía `getAiProviderConfig()`.
+   */
+  workspaceConfig?: {
+    apiKey: string;
+    model?: string;
+    baseUrl?: string | null;
+  };
 };
 
 export type ChatResult = { text: string; provider: ChatProvider };
@@ -98,20 +109,28 @@ export async function chat(args: ChatArgs): Promise<ChatResult> {
  */
 export async function* chatStream(args: ChatArgs): AsyncGenerator<string, void, undefined> {
   const provider = args.provider ?? detectChatProvider();
+  // Workspace config tiene PRIORIDAD sobre env. Si el user configuró su key
+  // en /admin/ajustes/ia, esa se usa; si no, fallback a env.
+  const wsKey = args.workspaceConfig?.apiKey;
+  const wsModel = args.workspaceConfig?.model;
+  const wsBaseUrl = args.workspaceConfig?.baseUrl;
 
-  if (provider === "anthropic" && env.ANTHROPIC_API_KEY) {
-    yield* anthropicStream(args, env.ANTHROPIC_API_KEY);
-    return;
+  if (provider === "anthropic") {
+    const key = wsKey || env.ANTHROPIC_API_KEY;
+    if (key) {
+      yield* anthropicStream(args, key, wsModel);
+      return;
+    }
   }
   if (provider === "ollama") {
-    yield* ollamaStream(args);
+    yield* ollamaStream(args, wsBaseUrl ?? undefined, wsModel);
     return;
   }
   if (provider === "groq" || provider === "openai" || provider === "mistral") {
     const cfg = OPENAI_COMPATIBLE_MODELS[provider];
-    const key = env[cfg.envKey];
+    const key = wsKey || env[cfg.envKey];
     if (typeof key === "string" && key.length > 0) {
-      yield* openaiCompatStream(args, cfg.base, cfg.model, key);
+      yield* openaiCompatStream(args, cfg.base, wsModel || cfg.model, key);
       return;
     }
   }
@@ -172,9 +191,10 @@ async function* openaiCompatStream(
 async function* anthropicStream(
   args: ChatArgs,
   apiKey: string,
+  modelOverride?: string,
 ): AsyncGenerator<string, void, undefined> {
   const body = {
-    model: "claude-haiku-4-5-20251001",
+    model: modelOverride || "claude-haiku-4-5-20251001",
     stream: true,
     max_tokens: args.maxTokens ?? 1024,
     temperature: args.temperature ?? 0.6,
@@ -215,9 +235,13 @@ async function* anthropicStream(
   }
 }
 
-async function* ollamaStream(args: ChatArgs): AsyncGenerator<string, void, undefined> {
-  const url = process.env.OLLAMA_URL ?? "http://localhost:11434";
-  const model = process.env.OLLAMA_MODEL ?? "llama3.2";
+async function* ollamaStream(
+  args: ChatArgs,
+  baseUrlOverride?: string,
+  modelOverride?: string,
+): AsyncGenerator<string, void, undefined> {
+  const url = baseUrlOverride || process.env.OLLAMA_URL || "http://localhost:11434";
+  const model = modelOverride || process.env.OLLAMA_MODEL || "llama3.2";
   const body = {
     model,
     stream: true,
@@ -486,4 +510,49 @@ function simpleHash(s: string): number {
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
+}
+
+// ============================================================
+// Workspace-aware helpers
+// ============================================================
+const WS_TO_CHAT_PROVIDER: Record<AiProviderId, ChatProvider> = {
+  anthropic: "anthropic",
+  openai: "openai",
+  xai: "openai", // xAI/Grok usa API compatible OpenAI
+  openrouter: "openai", // OpenRouter usa API compatible OpenAI
+  ollama: "ollama",
+};
+
+/**
+ * Carga la config AI del workspace activo (provider + key encriptada en BD)
+ * y la convierte en `{ provider, workspaceConfig }` para pasar a `chat()`.
+ *
+ * Devuelve null si el workspace no tiene config (caller usa env fallback).
+ *
+ * Uso:
+ *   const cfg = await resolveWorkspaceAiConfig(workspaceId, workspace.aiProvider);
+ *   const result = await chat({ ...args, ...cfg });
+ */
+export async function resolveWorkspaceAiConfig(
+  workspaceId: string,
+  preferredProvider: string | null | undefined,
+): Promise<Pick<ChatArgs, "provider" | "workspaceConfig"> | null> {
+  if (!preferredProvider) return null;
+  const provider = preferredProvider as AiProviderId;
+  if (!(provider in WS_TO_CHAT_PROVIDER)) return null;
+  const config = await getAiProviderConfig(workspaceId, provider);
+  if (!config) return null;
+  // Si está deshabilitado, ignoramos.
+  if (!config.enabled) return null;
+  // Para providers que requieren key (no-ollama), si no hay key, devolver null
+  // → el caller cae a env vars o mock.
+  if (provider !== "ollama" && !config.apiKey) return null;
+  return {
+    provider: WS_TO_CHAT_PROVIDER[provider],
+    workspaceConfig: {
+      apiKey: config.apiKey,
+      model: config.model || undefined,
+      baseUrl: config.baseUrl,
+    },
+  };
 }

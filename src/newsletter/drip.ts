@@ -16,6 +16,7 @@
  */
 
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import {
   type Drip,
   type DripEnrollment,
@@ -97,19 +98,18 @@ export async function createDrip(input: {
   if (!db) return null;
   const stepsParsed = input.steps ? DripStepsSchema.safeParse(input.steps) : null;
   const steps = stepsParsed?.success ? stepsParsed.data : null;
-  const [row] = await db
-    .insert(drips)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      description: input.description ?? null,
-      triggerType: input.triggerType ?? "subscribe_confirmed",
-      triggerConfig: (input.triggerConfig ?? null) as never,
-      steps: (steps ?? []) as never,
-      status: "draft",
-      createdById: input.createdById ?? null,
-    })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(drips, {
+    id,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    description: input.description ?? null,
+    triggerType: input.triggerType ?? "subscribe_confirmed",
+    triggerConfig: (input.triggerConfig ?? null) as never,
+    steps: (steps ?? []) as never,
+    status: "draft",
+    createdById: input.createdById ?? null,
+  })) as Drip;
   return row ?? null;
 }
 
@@ -136,21 +136,25 @@ export async function updateDrip(
     const parsed = DripStepsSchema.safeParse(patch.steps);
     if (parsed.success) updates.steps = parsed.data;
   }
-  const [row] = await db
+  await db
     .update(drips)
     .set(updates)
+    .where(and(eq(drips.workspaceId, workspaceId), eq(drips.id, id)));
+  const [row] = await db
+    .select()
+    .from(drips)
     .where(and(eq(drips.workspaceId, workspaceId), eq(drips.id, id)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
 export async function deleteDrip(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const result = await db
-    .delete(drips)
-    .where(and(eq(drips.workspaceId, workspaceId), eq(drips.id, id)))
-    .returning({ id: drips.id });
-  return result.length > 0;
+  const deleted = await deleteReturningCount(
+    drips,
+    and(eq(drips.workspaceId, workspaceId), eq(drips.id, id))!,
+  );
+  return deleted > 0;
 }
 
 // ============================================================
@@ -187,7 +191,7 @@ export async function enrollSubscriber(input: {
 
   if (existing) {
     // Re-activamos
-    const [updated] = await db
+    await db
       .update(dripEnrollments)
       .set({
         status: "active",
@@ -197,22 +201,25 @@ export async function enrollSubscriber(input: {
         cancelledAt: null,
         cancelReason: null,
       })
+      .where(eq(dripEnrollments.id, existing.id));
+    const [updated] = await db
+      .select()
+      .from(dripEnrollments)
       .where(eq(dripEnrollments.id, existing.id))
-      .returning();
+      .limit(1);
     return updated ?? null;
   }
 
-  const [row] = await db
-    .insert(dripEnrollments)
-    .values({
-      workspaceId: input.workspaceId,
-      dripId: input.dripId,
-      subscriberId: input.subscriberId,
-      currentStep: 0,
-      nextRunAt,
-      status: "active",
-    })
-    .returning();
+  const enrollmentId = crypto.randomUUID();
+  const row = (await insertReturning(dripEnrollments, {
+    id: enrollmentId,
+    workspaceId: input.workspaceId,
+    dripId: input.dripId,
+    subscriberId: input.subscriberId,
+    currentStep: 0,
+    nextRunAt,
+    status: "active",
+  })) as DripEnrollment;
 
   if (row) {
     await db
@@ -228,18 +235,22 @@ export async function cancelEnrollmentsForSubscriber(
   reason: string,
 ): Promise<number> {
   if (!db) return 0;
-  const rows = await db
+  // Pattern C cross-dialect: SELECT-then-UPDATE (MySQL no soporta UPDATE...RETURNING).
+  const where = and(
+    eq(dripEnrollments.subscriberId, subscriberId),
+    eq(dripEnrollments.status, "active"),
+  )!;
+  const matched = await db.select({ id: dripEnrollments.id }).from(dripEnrollments).where(where);
+  if (matched.length === 0) return 0;
+  await db
     .update(dripEnrollments)
     .set({
       status: "cancelled",
       cancelledAt: new Date(),
       cancelReason: reason,
     })
-    .where(
-      and(eq(dripEnrollments.subscriberId, subscriberId), eq(dripEnrollments.status, "active")),
-    )
-    .returning({ id: dripEnrollments.id });
-  return rows.length;
+    .where(where);
+  return matched.length;
 }
 
 export async function autoEnrollOnConfirm(sub: Subscriber): Promise<void> {

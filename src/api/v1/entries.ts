@@ -24,12 +24,13 @@ import {
   paginatedResponseSchema,
 } from "@/api/schemas";
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import { type Entry, collections, entries } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { ensureUniqueEntrySlug, getOrCreateBuiltinCollection } from "@/lib/entries";
 import { slugify } from "@/lib/slug";
 import { emitAsync } from "@/webhooks/dispatcher";
-import { and, eq, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 const ENTRY_FILTER_COLUMNS = {
@@ -73,7 +74,7 @@ function serializeEntry(row: Entry, collection?: { id: string; slug: string; nam
 // ============================================================
 
 export const ListEntriesQuerySchema = PaginationQuerySchema.extend({
-  status: z.enum(["draft", "review", "scheduled", "published", "archived"]).optional(),
+  status: z.enum(["draft", "review", "approved", "scheduled", "published", "archived"]).optional(),
   collectionSlug: z.string().optional(),
   locale: z.string().optional(),
   q: z.string().optional(),
@@ -89,7 +90,8 @@ export async function listEntriesHandler(input: {
   const sorts = parseSort(query.sort ?? null);
   const whereClauses = parseWhere(ctx.searchParams);
 
-  const filters = [eq(entries.workspaceId, ctx.workspaceId)];
+  // F9b: la API REST pública nunca devuelve forks de branches.
+  const filters = [eq(entries.workspaceId, ctx.workspaceId), isNull(entries.branchId)];
   if (query.status) filters.push(eq(entries.status, query.status));
   if (query.locale) filters.push(eq(entries.locale, query.locale));
   if (query.q) {
@@ -181,10 +183,21 @@ export async function getEntryHandler(input: {
     [row] = await db
       .select()
       .from(entries)
-      .where(and(eq(entries.workspaceId, input.ctx.workspaceId), eq(entries.id, idOrSlug)))
+      .where(
+        and(
+          eq(entries.workspaceId, input.ctx.workspaceId),
+          eq(entries.id, idOrSlug),
+          // F9b: la API pública no resuelve fork ids.
+          isNull(entries.branchId),
+        ),
+      )
       .limit(1);
   } else {
-    const filters = [eq(entries.workspaceId, input.ctx.workspaceId), eq(entries.slug, idOrSlug)];
+    const filters = [
+      eq(entries.workspaceId, input.ctx.workspaceId),
+      eq(entries.slug, idOrSlug),
+      isNull(entries.branchId),
+    ];
     if (input.query.locale) filters.push(eq(entries.locale, input.query.locale));
     [row] = await db.select().from(entries).where(combineWhere(filters)).limit(1);
   }
@@ -258,22 +271,20 @@ export async function createEntryHandler(input: {
 
   // authorId queda null porque las API keys no son users (FK apunta a users.id).
   // El audit log conserva la api_key_id que originó la creación.
-  const created = await db
-    .insert(entries)
-    .values({
-      workspaceId: ctx.workspaceId,
-      collectionId: collection.id,
-      title: body.title,
-      slug,
-      locale: body.locale ?? "es",
-      status: "draft",
-      body: { type: "doc", content: [{ type: "paragraph" }] } as Record<string, unknown>,
-      bodyText: "",
-      authorId: null,
-      updatedById: null,
-    })
-    .returning();
-  const createdRow = created[0];
+  const newId = crypto.randomUUID();
+  const createdRow = (await insertReturning(entries, {
+    id: newId,
+    workspaceId: ctx.workspaceId,
+    collectionId: collection.id,
+    title: body.title,
+    slug,
+    locale: body.locale ?? "es",
+    status: "draft",
+    body: { type: "doc", content: [{ type: "paragraph" }] } as Record<string, unknown>,
+    bodyText: "",
+    authorId: null,
+    updatedById: null,
+  })) as Entry;
   if (!createdRow) throw conflict("No se pudo crear la entrada");
 
   // Actualizamos los campos opcionales del body en una segunda query (mantenemos
@@ -350,10 +361,17 @@ export async function updateEntryHandler(input: {
     };
   }
   UuidSchema.parse(params.id);
+  // F9b: las mutaciones API sólo operan sobre entries de main.
   const [existing] = await db
     .select()
     .from(entries)
-    .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, params.id)))
+    .where(
+      and(
+        eq(entries.workspaceId, ctx.workspaceId),
+        eq(entries.id, params.id),
+        isNull(entries.branchId),
+      ),
+    )
     .limit(1);
   if (!existing) throw notFound(`Entrada ${params.id} no existe`);
 
@@ -431,11 +449,16 @@ export async function deleteEntryHandler(input: {
   if (!db) throw new Error("DB no configurada");
   if (input.ctx.apiKey.environment === "test") return { ok: true as const };
   UuidSchema.parse(input.params.id);
-  const result = await db
-    .delete(entries)
-    .where(and(eq(entries.workspaceId, input.ctx.workspaceId), eq(entries.id, input.params.id)))
-    .returning({ id: entries.id });
-  if (result.length === 0) throw notFound(`Entrada ${input.params.id} no existe`);
+  // F9b: la API sólo borra entries de main. Forks se gestionan desde /admin/branches.
+  const count = await deleteReturningCount(
+    entries,
+    and(
+      eq(entries.workspaceId, input.ctx.workspaceId),
+      eq(entries.id, input.params.id),
+      isNull(entries.branchId),
+    )!,
+  );
+  if (count === 0) throw notFound(`Entrada ${input.params.id} no existe`);
   await logActivity({
     workspaceId: input.ctx.workspaceId,
     actorId: null,
@@ -463,11 +486,17 @@ export async function publishEntryHandler(input: {
   if (!db) throw new Error("DB no configurada");
   if (input.ctx.apiKey.environment === "test") return { ok: true as const, published: 1 };
   UuidSchema.parse(input.params.id);
-  // Verificamos primero que la entrada existe (para distinguir 404 vs idempotente)
+  // F9b: solo se publica en main. Para publicar fork → mergea la branch.
   const [existing] = await db
     .select({ id: entries.id, status: entries.status, slug: entries.slug, title: entries.title })
     .from(entries)
-    .where(and(eq(entries.workspaceId, input.ctx.workspaceId), eq(entries.id, input.params.id)))
+    .where(
+      and(
+        eq(entries.workspaceId, input.ctx.workspaceId),
+        eq(entries.id, input.params.id),
+        isNull(entries.branchId),
+      ),
+    )
     .limit(1);
   if (!existing) throw notFound(`Entrada ${input.params.id} no existe`);
   // Sólo emitimos webhook si realmente transiciona

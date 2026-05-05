@@ -181,3 +181,148 @@
 .hljs-bullet {
   color: var(--warning);
 }
+
+/* ============================================================
+   F10b — Realtime collaboration cursors (Y.js + CollaborationCursor)
+   ============================================================ */
+
+/* Caret remoto: línea vertical de 2px con el color del peer (border-left).
+   La extensión inyecta `style="border-color: <color>"` en el span. */
+.collaboration-cursor__caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid;
+  border-right: 0;
+  word-break: normal;
+  pointer-events: none;
+}
+
+/* Label sobre el caret con el nombre del peer.
+   Aparece en hover y los primeros 2.5s tras un cambio (transition opacity). */
+.collaboration-cursor__label {
+  position: absolute;
+  top: -1.45em;
+  left: -1px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: white;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px 4px 4px 0;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease-in-out;
+  /* La extensión también añade `style="background-color: <color>"`. */
+}
+
+/* Mostrar label brevemente cuando el cursor remoto cambia. CollaborationCursor
+   añade la clase `.collaboration-cursor__caret--visible` al caret tras una
+   actualización del peer; lo damos por hecho con :hover + animación de
+   "show + fade" cada vez que el caret se renderiza. */
+.collaboration-cursor__caret:hover .collaboration-cursor__label,
+.collaboration-cursor__caret--just-changed .collaboration-cursor__label {
+  opacity: 1;
+}
+
+/* Selección remota: highlight con color translúcido. */
+.collaboration-cursor__selection {
+  /* La extensión añade un nodeName=span con `style: background-color: <color>`.
+     Bajamos opacidad a 25% via mix-blend-mode para legibilidad sobre cualquier fondo. */
+  mix-blend-mode: multiply;
+  opacity: 0.4;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+/* Animación de "pulso" en el caret al aparecer un peer nuevo (visual hint). */
+@keyframes csm-cursor-fade {
+  0% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.collaboration-cursor__caret .collaboration-cursor__label {
+  animation: csm-cursor-fade 3s ease-out forwards;
+}
+
+.collaboration-cursor__caret:hover .collaboration-cursor__label {
+  animation: none;
+  opacity: 1;
+}
+
+/* ============================================================
+   Builder Canvas — neutralizaciones para plantillas espectaculares
+   ============================================================
+   Las plantillas tpl-* usan min-h-screen, h-screen, fixed positioning,
+   etc. para ocupar toda la ventana en producción. Dentro del canvas del
+   builder eso rompe el layout (heroes gigantes, navs flotantes que se
+   superponen al inspector, scroll horizontal, contenido cortado abajo).
+   Estas reglas SOLO aplican dentro de `.csm-edit-canvas` — la página
+   publicada y el preview siguen full-bleed. `:where()` mantiene la
+   especificidad baja para que el usuario pueda overrides desde el
+   inspector si quiere. */
+
+/* 1. Hero "min-h-screen" / "h-screen" → altura razonable dentro del canvas. */
+.csm-edit-canvas :where(.csm-showcase) :where(section) {
+  /* Si la sección hereda min-h-screen vía clase Tailwind, lo bajamos. */
+  min-height: 0;
+}
+.csm-edit-canvas :where(.csm-showcase) :where(section.h-screen),
+.csm-edit-canvas :where(.csm-showcase) :where(section[class*="min-h-screen"]) {
+  min-height: 700px !important;
+  height: auto !important;
+}
+
+/* 2. Nav fixed al top de la viewport → absolute respecto a la sección padre.
+   Esto evita que el nav del hero (Asme/Michael) flote sobre el inspector. */
+.csm-edit-canvas :where(.csm-showcase) :where(.fixed) {
+  position: absolute !important;
+}
+
+/* 3. ContactPill (Jack) y otros elementos con position:fixed inline → idem. */
+.csm-edit-canvas :where(.csm-showcase) [style*="position: fixed"],
+.csm-edit-canvas :where(.csm-showcase) [style*="position:fixed"] {
+  position: absolute !important;
+}
+
+/* 4. Loading screen (Michael) — fixed inset-0 z-9999. Dentro del canvas
+   queremos que sea contenedor del hero, no overlay full-window. */
+.csm-edit-canvas :where(.csm-showcase) :where(.fixed.inset-0) {
+  position: absolute !important;
+}
+
+/* 5. Cursor demo (template-preview) no aplica aquí; pero por si algún
+   showcase lo introdujera, lo escondemos en edición. */
+.csm-edit-canvas :where(.csm-showcase) [aria-label="Cursor demo"],
+.csm-edit-canvas :where(.csm-showcase) :where(svg[aria-hidden]):where([style*="z-index: 999999"]) {
+  display: none !important;
+}
+
+/* 6. Sticky stack cards (Jack projects): el sticky depende del scroll del
+   container. En el canvas el scroll no es del viewport sino del canvas
+   mismo. Convertimos sticky → relative para que las cards se vean en cascada
+   normal en lugar de quedarse pegadas al borde. */
+.csm-edit-canvas :where(.csm-showcase) :where(.csm-sticky-card) {
+  position: relative !important;
+  top: 0 !important;
+}
+
+/* 7. Vídeos full-bleed: limitamos altura para que no se desborden el card. */
+.csm-edit-canvas :where(.csm-showcase) video {
+  max-height: 720px;
+}
+
+/* 8. Pointer-events de overlays decorativos: en producción son OK porque
+   el cursor demo dispatcha mousemove. En el canvas, un usuario clic-edita
+   bloques — los overlays con pointer-events:none ya están bien, pero los
+   absolute decorativos (jack corners) podrían tapar selección de bloque
+   subyacente. Dejamos como están — son los hijos directos los importantes. */

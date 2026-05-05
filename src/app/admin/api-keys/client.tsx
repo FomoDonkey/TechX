@@ -164,7 +164,9 @@ function ApiKeyRowItem({ k }: { k: ApiKeyRow }) {
     <li className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{k.name}</span>
+          <a href={`/admin/api-keys/${k.id}`} className="font-medium hover:underline">
+            {k.name}
+          </a>
           <Badge
             variant={k.environment === "live" ? "default" : "secondary"}
             className="text-[10px] uppercase tracking-wider"

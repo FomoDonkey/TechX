@@ -4,6 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Webhook, webhookDeliveries, webhooks } from "@/db/schema";
 import { assertPublicUrl } from "@/lib/ssrf";
 import type { WebhookEvent } from "@/webhooks/events";
@@ -95,22 +96,21 @@ export async function createWebhook(input: CreateWebhookInput) {
   if (!db) throw new Error("DB no configurada");
   await assertPublicUrl(input.url);
   const secret = `whsec_${randomBytes(24).toString("base64url")}`;
-  const [row] = await db
-    .insert(webhooks)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      description: input.description ?? null,
-      url: input.url,
-      secret,
-      events: input.events,
-      maxAttempts: input.maxAttempts ?? 5,
-      active: input.active ?? true,
-      createdById: input.createdById ?? null,
-    })
-    .returning({ id: webhooks.id });
-  if (!row) throw new Error("No se pudo crear el webhook");
-  return { id: row.id, secret };
+  const newId = crypto.randomUUID();
+  const fullRow = (await insertReturning(webhooks, {
+    id: newId,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    description: input.description ?? null,
+    url: input.url,
+    secret,
+    events: input.events,
+    maxAttempts: input.maxAttempts ?? 5,
+    active: input.active ?? true,
+    createdById: input.createdById ?? null,
+  })) as Webhook;
+  if (!fullRow) throw new Error("No se pudo crear el webhook");
+  return { id: fullRow.id, secret };
 }
 
 export async function updateWebhook(input: {

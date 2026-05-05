@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { eq } from "drizzle-orm";
 import { db, schema } from "./client";
+import { insertReturning } from "./dialect";
 
 const DEMO_EMAIL = "demo@csm.dev";
 const DEMO_PASSWORD = "demo1234";
@@ -26,20 +27,19 @@ async function main() {
     .limit(1);
 
   if (!ws) {
-    [ws] = await db
-      .insert(schema.workspaces)
-      .values({
-        slug: "demo",
-        name: "Demo · CSM",
-        branding: {
-          colors: { primary: "oklch(0.55 0.22 290)", accent: "oklch(0.72 0.25 340)" },
-          font: "geist",
-          voice: "cercano, claro, optimista",
-        },
-        defaultLocale: "es",
-        locales: ["es", "en"],
-      })
-      .returning();
+    const wsId = crypto.randomUUID();
+    ws = (await insertReturning(schema.workspaces, {
+      id: wsId,
+      slug: "demo",
+      name: "Demo · CSM",
+      branding: {
+        colors: { primary: "oklch(0.55 0.22 290)", accent: "oklch(0.72 0.25 340)" },
+        font: "geist",
+        voice: "cercano, claro, optimista",
+      },
+      defaultLocale: "es",
+      locales: ["es", "en"],
+    })) as typeof schema.workspaces.$inferSelect;
     console.log("  ✓ Workspace creado:", ws?.slug);
   } else {
     console.log("  · Workspace ya existe:", ws.slug);
@@ -57,6 +57,29 @@ async function main() {
       .onConflictDoNothing({ target: [schema.collections.workspaceId, schema.collections.slug] });
   }
   console.log("  ✓ Colecciones builtin (posts, pages)");
+
+  // 2.5) Branch main por workspace (idempotente, F9b)
+  const [existingMain] = await db
+    .select({ id: schema.branches.id })
+    .from(schema.branches)
+    .where(eq(schema.branches.workspaceId, ws.id))
+    .limit(1);
+  if (!existingMain) {
+    await db.insert(schema.branches).values({
+      workspaceId: ws.id,
+      name: "main",
+      slug: "main",
+      description: "Rama principal del workspace",
+      isDefault: true,
+      isProtected: true,
+      status: "draft",
+      color: "oklch(0.78 0.18 180)",
+      icon: "git-branch",
+    });
+    console.log("  ✓ Branch main creada");
+  } else {
+    console.log("  · Branch main ya existe");
+  }
 
   // 3) Demo user vía Better-Auth (gestiona el hash de password correctamente)
   const [existingUser] = await db

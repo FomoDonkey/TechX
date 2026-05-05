@@ -9,7 +9,12 @@ import {
 } from "@/app/admin/contenido/_actions";
 import { AIInlinePopover } from "@/components/admin/editor/ai-inline";
 import { BubbleToolbar } from "@/components/admin/editor/bubble-toolbar";
+import {
+  EditorialDrawer,
+  type EditorialDrawerInitial,
+} from "@/components/admin/editor/editorial-drawer";
 import { MediaPicker } from "@/components/admin/editor/media-picker";
+import { PresenceAvatars } from "@/components/admin/editor/presence-avatars";
 import { PreviewPane } from "@/components/admin/editor/preview-pane";
 import { type RevisionItem, RevisionsPanel } from "@/components/admin/editor/revisions-panel";
 import { SidePanel, type SidePanelState } from "@/components/admin/editor/side-panel";
@@ -21,11 +26,15 @@ import {
 } from "@/components/admin/editor/slash-menu";
 import { VoiceDictation } from "@/components/admin/editor/voice-dictation";
 import "@/components/admin/editor/editor-styles.css";
+import { type CollabUserMeta, userColor } from "@/collab/provider";
+import { useCollab } from "@/collab/use-collab";
 import { RelativeTime } from "@/components/admin/dashboard/relative-time";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import CharacterCount from "@tiptap/extension-character-count";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
+import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
@@ -39,7 +48,7 @@ import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { common, createLowlight } from "lowlight";
-import { ArrowLeft, Eye, History, Loader2, Send, Sparkles } from "lucide-react";
+import { ArrowLeft, Eye, History, Loader2, MessageCircle, Send, Sparkles } from "lucide-react";
 import NextLink from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -55,7 +64,7 @@ import { toast } from "sonner";
 
 const lowlight = createLowlight(common);
 
-type Status = "draft" | "review" | "scheduled" | "published" | "archived";
+type Status = "draft" | "review" | "approved" | "scheduled" | "published" | "archived";
 
 export type EditorInitial = {
   id: string;
@@ -73,13 +82,24 @@ export type EditorInitial = {
 type Props = {
   initial: EditorInitial;
   workspaceSlug: string;
+  /** F10b — usuario actual para realtime collab (presence + audit). */
+  currentUser: { id: string; name: string; image: string | null; role: string };
   revisions: RevisionItem[];
   bodyText: string;
+  /** F9c — datos editoriales (assignees, threads, events, members). Opcional. */
+  editorial?: EditorialDrawerInitial;
 };
 
 const AUTOSAVE_MS = 1500;
 
-export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Props) {
+export function EditorShell({
+  initial,
+  workspaceSlug,
+  currentUser,
+  revisions,
+  bodyText,
+  editorial,
+}: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
@@ -99,6 +119,7 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
   const [savedAt, setSavedAt] = useState(initial.updatedAt);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [editorialOpen, setEditorialOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const slashHandle = useRef<SlashController | null>(null);
@@ -112,6 +133,22 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
 
   const slashExtension = useMemo(() => createSlashExtension(() => slashHandle.current), []);
 
+  // F10b — realtime collab. El Y.Doc es ground truth; el editor lo enchufa via
+  // Collaboration extension. Cuando el provider recibe `init` sin snapshot ni
+  // updates (primer cliente abriendo collab para este entry), seedea desde
+  // `initial.body` para no quedarse en blanco.
+  const collabUser = useMemo<CollabUserMeta>(
+    () => ({
+      id: currentUser.id,
+      name: currentUser.name,
+      color: userColor(currentUser.id),
+      role: currentUser.role,
+      avatarUrl: currentUser.image ?? undefined,
+    }),
+    [currentUser.id, currentUser.name, currentUser.image, currentUser.role],
+  );
+  const collab = useCollab({ entryId: initial.id, user: collabUser });
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -120,6 +157,9 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
         codeBlock: false,
         bulletList: { keepMarks: true },
         orderedList: { keepMarks: true },
+        // Collaboration extension trae su propia history (yjs undo manager).
+        // Hay que apagar el undoRedo nativo de Tiptap 3 para evitar conflictos.
+        undoRedo: false,
       }),
       Underline,
       Link.configure({
@@ -149,14 +189,34 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
       CodeBlockLowlight.configure({ lowlight, defaultLanguage: "plaintext" }),
       CharacterCount,
       slashExtension,
+      Collaboration.configure({ document: collab.doc }),
+      CollaborationCursor.configure({
+        provider: { awareness: collab.awareness },
+        user: { name: collabUser.name, color: collabUser.color },
+      }),
     ],
-    content: initial.body ?? { type: "doc", content: [{ type: "paragraph" }] },
+    // El doc Y.js es ground truth. NO setear `content` aquí — Collaboration
+    // sobreescribiría con el contenido inicial del doc (vacío) y esto
+    // conflictaría con la siembra desde body_json. La siembra se hace abajo
+    // en `setOnSeed` cuando el server confirma que no hay snapshot.
     editorProps: {
       attributes: {
         class: "csm-editor-content",
       },
     },
   });
+
+  // Registra el seed callback: si el server dice "no había nada en collab",
+  // sembramos desde el body persistido (Tiptap JSON) sin disparar autosave.
+  useEffect(() => {
+    if (!editor) return;
+    collab.setOnSeed((body) => {
+      if (!body || editor.isDestroyed) return;
+      // emitUpdate:true para que el contenido se propague via Y.Doc → otros peers.
+      editor.commands.setContent(body as never, { emitUpdate: true });
+    });
+    return () => collab.setOnSeed(null);
+  }, [editor, collab]);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
@@ -190,6 +250,11 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
         }
         broadcast("saved", res.updatedAt);
         setRefreshKey((k) => k + 1);
+        // F9b: COW lazy — si el backend forkeó la entry a una branch, redirigir al nuevo id.
+        if ("forkedToId" in res && res.forkedToId) {
+          toast.success("Entrada forkeada a la branch activa");
+          window.location.href = `/admin/contenido/${res.forkedToId}`;
+        }
       } else {
         setSavedState("error");
         toast.error(res.error);
@@ -408,7 +473,12 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
           {workspaceSlug}/posts/{side.slug}
         </span>
 
-        <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="ml-auto inline-flex items-center gap-3 text-xs text-muted-foreground">
+          {collab.peers.length > 0 ? (
+            <PresenceAvatars peers={collab.peers} max={4} className="mr-1" />
+          ) : null}
+          <CollabIndicator status={collab.status} peerCount={collab.peers.length} />
+          <span className="hidden sm:inline text-muted-foreground/40">·</span>
           <SaveIndicator state={savedState} savedAt={savedAt} />
         </span>
 
@@ -420,6 +490,24 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
         >
           <History className="size-4" /> Historial
         </Button>
+        {editorial ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setEditorialOpen(true)}
+            className={cn(
+              "rounded-lg",
+              editorial.threads.some((t) => t.status === "open") && "text-amber-600",
+            )}
+          >
+            <MessageCircle className="size-4" /> Editorial
+            {editorial.threads.filter((t) => t.status === "open").length > 0 ? (
+              <span className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 text-[10px]">
+                {editorial.threads.filter((t) => t.status === "open").length}
+              </span>
+            ) : null}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
@@ -540,7 +628,52 @@ export function EditorShell({ initial, workspaceSlug, revisions, bodyText }: Pro
       <MediaPicker />
 
       <AIInlinePopover editor={editor} />
+
+      {editorial ? (
+        <EditorialDrawer
+          open={editorialOpen}
+          onClose={() => setEditorialOpen(false)}
+          initial={editorial}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function CollabIndicator({
+  status,
+  peerCount,
+}: {
+  status: "connecting" | "connected" | "offline";
+  peerCount: number;
+}) {
+  if (status === "connecting") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+        <span className="size-1.5 rounded-full bg-muted-foreground/50 animate-pulse" />
+        Conectando…
+      </span>
+    );
+  }
+  if (status === "offline") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-warning">
+        <span className="size-1.5 rounded-full bg-warning" /> Offline
+      </span>
+    );
+  }
+  if (peerCount === 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+        <span className="size-1.5 rounded-full bg-success" /> En vivo
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-success">
+      <span className="size-1.5 rounded-full bg-success" />
+      {peerCount} {peerCount === 1 ? "persona más" : "personas más"} editando
+    </span>
   );
 }
 

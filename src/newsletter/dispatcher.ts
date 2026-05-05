@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db } from "@/db/client";
+import { atomicClaim, atomicClaimMany } from "@/db/dialect";
 import {
   type Campaign,
   type CampaignRecipient,
@@ -137,8 +138,12 @@ export async function expandCampaignRecipients(campaignId: string): Promise<numb
     return 0;
   }
 
-  // Insert recipients en batch con onConflictDoNothing (defensa-en-profundidad).
-  const values = matched.map((s) => ({
+  // Insert recipients en batch. La idempotencia ya está garantizada por el
+  // fast-path `count(*) > 0` arriba; aquí pre-filtramos por (campaignId,
+  // subscriberId) existentes para emular el `onConflictDoNothing` de forma
+  // cross-dialect (MySQL no soporta INSERT...ON CONFLICT DO NOTHING RETURNING).
+  const candidateValues = matched.map((s) => ({
+    id: randomUUID(),
     workspaceId: campaign.workspaceId,
     campaignId: campaign.id,
     subscriberId: s.id,
@@ -147,17 +152,28 @@ export async function expandCampaignRecipients(campaignId: string): Promise<numb
     trackingHash: randomUUID(),
   }));
 
+  // Pre-check: subscribers ya con recipient para esta campaña.
+  const existingPairs = await db
+    .select({ subscriberId: campaignRecipients.subscriberId })
+    .from(campaignRecipients)
+    .where(
+      and(
+        eq(campaignRecipients.campaignId, campaign.id),
+        inArray(
+          campaignRecipients.subscriberId,
+          candidateValues.map((v) => v.subscriberId),
+        ),
+      ),
+    );
+  const existingSet = new Set(existingPairs.map((p) => p.subscriberId));
+  const values = candidateValues.filter((v) => !existingSet.has(v.subscriberId));
+
   let inserted = 0;
   for (let i = 0; i < values.length; i += 200) {
     const chunk = values.slice(i, i + 200);
-    const result = await db
-      .insert(campaignRecipients)
-      .values(chunk)
-      .onConflictDoNothing({
-        target: [campaignRecipients.campaignId, campaignRecipients.subscriberId],
-      })
-      .returning({ id: campaignRecipients.id });
-    inserted += result.length;
+    if (chunk.length === 0) continue;
+    await db.insert(campaignRecipients).values(chunk);
+    inserted += chunk.length;
   }
 
   // Update totalRecipients sólo si seguía en 0 — evita doble-suma si dos llamadas
@@ -192,18 +208,13 @@ export async function startCampaignSend(
 ): Promise<{ ok: boolean; total: number }> {
   if (!db) return { ok: false, total: 0 };
 
-  // Claim atómico: status pasa a 'sending' sólo si era 'draft' o 'scheduled'
-  const claimed = await db
-    .update(campaigns)
-    .set({ status: "sending", startedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(campaigns.id, campaignId),
-        or(eq(campaigns.status, "draft"), eq(campaigns.status, "scheduled")),
-      ),
-    )
-    .returning({ id: campaigns.id });
-  if (claimed.length === 0) return { ok: false, total: 0 };
+  // Claim atómico: status pasa a 'sending' sólo si era 'draft' o 'scheduled'.
+  const claimed = await atomicClaim<{ id: string; status: string }>(campaigns, {
+    where: eq(campaigns.id, campaignId),
+    precondition: (row) => row.status === "draft" || row.status === "scheduled",
+    set: { status: "sending", startedAt: new Date(), updatedAt: new Date() },
+  });
+  if (!claimed) return { ok: false, total: 0 };
 
   const total = await expandCampaignRecipients(campaignId);
   if (total === 0) {
@@ -275,16 +286,14 @@ export async function processCampaigns(
     const batch = pending.slice(i, i + BATCH_SIZE);
     const ids = batch.map((b) => b.recipient.id);
 
-    // Claim atómico para evitar doble envío
-    const claimedIds = (
-      await db
-        .update(campaignRecipients)
-        .set({ status: "sending" })
-        .where(and(inArray(campaignRecipients.id, ids), eq(campaignRecipients.status, "pending")))
-        .returning({ id: campaignRecipients.id })
-    ).map((r) => r.id);
-
-    const claimedSet = new Set(claimedIds);
+    // Claim atómico para evitar doble envío. Pattern H batch: SELECT FOR UPDATE
+    // + filter por precondición (status='pending') + UPDATE.
+    const claimedRows = await atomicClaimMany<{ id: string; status: string }>(campaignRecipients, {
+      where: inArray(campaignRecipients.id, ids),
+      precondition: (row) => row.status === "pending",
+      set: { status: "sending" },
+    });
+    const claimedSet = new Set(claimedRows.map((r) => r.id));
     const claimedBatch = batch.filter((b) => claimedSet.has(b.recipient.id));
 
     for (const item of claimedBatch) {
@@ -318,12 +327,12 @@ async function markFinishedCampaigns(): Promise<void> {
     if ((pendingCount?.c ?? 0) === 0) {
       // Claim atómico: sólo actualiza si seguía en 'sending'. Si dos cron ticks
       // llegan al mismo tiempo, sólo uno emite `campaign.sent`.
-      const claimed = await db
-        .update(campaigns)
-        .set({ status: "sent", sentAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(campaigns.id, c.id), eq(campaigns.status, "sending")))
-        .returning({ id: campaigns.id });
-      if (claimed.length === 0) continue;
+      const claimed = await atomicClaim<{ id: string; status: string }>(campaigns, {
+        where: eq(campaigns.id, c.id),
+        precondition: (row) => row.status === "sending",
+        set: { status: "sent", sentAt: new Date(), updatedAt: new Date() },
+      });
+      if (!claimed) continue;
       const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, c.id)).limit(1);
       if (campaign) {
         emitAsync({
@@ -654,12 +663,12 @@ export async function recordBounceForRecipient(opts: {
   // duplicado en email_events. El webhook del provider puede entregar 2x.
   if (rec.status === "bounced") return;
   const now = new Date();
-  const claimed = await db
-    .update(campaignRecipients)
-    .set({ status: "bounced", bouncedAt: now, failureReason: opts.reason ?? null })
-    .where(and(eq(campaignRecipients.id, rec.id), sql`${campaignRecipients.status} != 'bounced'`))
-    .returning({ id: campaignRecipients.id });
-  if (claimed.length === 0) return;
+  const claimed = await atomicClaim<{ id: string; status: string }>(campaignRecipients, {
+    where: eq(campaignRecipients.id, rec.id),
+    precondition: (row) => row.status !== "bounced",
+    set: { status: "bounced", bouncedAt: now, failureReason: opts.reason ?? null },
+  });
+  if (!claimed) return;
   await db
     .update(campaigns)
     .set({ bounced: sql`coalesce(${campaigns.bounced}, 0) + 1`, updatedAt: now })

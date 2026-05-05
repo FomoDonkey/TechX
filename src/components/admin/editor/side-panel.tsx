@@ -30,7 +30,7 @@ export type SidePanelState = {
 };
 
 type Props = {
-  status: "draft" | "review" | "scheduled" | "published" | "archived";
+  status: "draft" | "review" | "approved" | "scheduled" | "published" | "archived";
   state: SidePanelState;
   onChange: (next: Partial<SidePanelState>) => void;
   onPublish: () => void;
@@ -434,6 +434,7 @@ function StatusDot({ status }: { status: Props["status"] }) {
   const map: Record<Props["status"], { label: string; cls: string }> = {
     draft: { label: "Borrador", cls: "bg-muted-foreground" },
     review: { label: "Revisión", cls: "bg-accent" },
+    approved: { label: "Aprobado", cls: "bg-success/70" },
     scheduled: { label: "Programado", cls: "bg-primary" },
     published: { label: "Publicado", cls: "bg-success" },
     archived: { label: "Archivado", cls: "bg-muted-foreground/40" },

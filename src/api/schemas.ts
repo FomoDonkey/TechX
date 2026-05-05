@@ -50,7 +50,7 @@ export const EntryResourceSchema = z.object({
   title: z.string(),
   slug: z.string(),
   excerpt: z.string().nullable(),
-  status: z.enum(["draft", "review", "scheduled", "published", "archived"]),
+  status: z.enum(["draft", "review", "approved", "scheduled", "published", "archived"]),
   locale: z.string(),
   collection: z.object({ id: z.string(), slug: z.string(), name: z.string() }).optional(),
   body: z.unknown().optional(),
@@ -77,7 +77,9 @@ export const EntryCreateSchema = z.object({
   slug: z.string().max(160).optional(),
   collectionSlug: z.string().min(1).default("posts"),
   locale: LocaleSchema.optional(),
-  status: z.enum(["draft", "review", "scheduled", "published", "archived"]).default("draft"),
+  status: z
+    .enum(["draft", "review", "approved", "scheduled", "published", "archived"])
+    .default("draft"),
   body: z.unknown().optional(),
   excerpt: z.string().max(500).optional(),
   fields: z.record(z.unknown()).optional(),

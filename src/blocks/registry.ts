@@ -1,3 +1,4 @@
+import { SPECTACULAR_SPECS } from "@/blocks/spectacular/specs";
 import { type BlockKind, type BlockNode, newId } from "@/blocks/types";
 import { z } from "zod";
 
@@ -54,13 +55,28 @@ export type BlockSpec = {
   kind: BlockKind;
   label: string;
   icon: string;
-  group: "Estructura" | "Tipografía" | "Multimedia" | "Acción" | "Secciones" | "Especial";
+  group:
+    | "Estructura"
+    | "Tipografía"
+    | "Multimedia"
+    | "Acción"
+    | "Secciones"
+    | "Especial"
+    | "Plantillas";
   description: string;
   canHaveChildren: boolean;
   defaultProps: Record<string, unknown>;
   propsSpec: PropSpec[];
   propsSchema: z.ZodTypeAny;
   defaultChildren?: () => BlockNode[];
+  /**
+   * Si true, el bloque NO aparece en el palette de "añadir bloque" pero
+   * sí se renderiza si está en el árbol y se puede editar desde el inspector.
+   * Pensado para los bloques `tpl-*` instanciados por las plantillas: queremos
+   * que el usuario los EDITE, no que los inserte sueltos (porque cada uno
+   * forma parte de la composición espectacular de una plantilla concreta).
+   */
+  hiddenInPalette?: boolean;
 };
 
 // ============================================================
@@ -70,6 +86,86 @@ const colorRegex =
   /^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|oklch\(.+\)|var\(--.+\)|transparent|inherit)$/;
 const alignEnum = z.enum(["left", "center", "right"]);
 const sizeEnum = z.enum(["sm", "md", "lg", "xl"]);
+
+/**
+ * Schema reutilizable para campos URL en todos los bloques.
+ *
+ * Acepta SÓLO:
+ *  - http(s)://...
+ *  - URLs relativas (/path, /path?q=1, /path#h)
+ *  - Anchors puros (#anchor)
+ *  - mailto:, tel:
+ *  - cadena vacía
+ *
+ * BLOQUEA explícitamente:
+ *  - javascript:, data:, file:, ftp:, vbscript:, ... (cualquier protocolo no-whitelisted)
+ *  - protocol-relative (//evil.com) — el browser las trata como cross-origin
+ *  - URLs que comienzan con /\ (potencial bypass: /\evil.com)
+ *  - whitespace, < > " (anti-attribute-break)
+ *
+ * Implementación con `isSafeUrl()` (función) en vez de regex monolítico —
+ * más legible y robusta vs casos como `JaVaScRiPt:`, leading whitespace,
+ * control chars.
+ *
+ * Aplicado a ctaHref, primaryHref, secondaryHref, button.href, video.url,
+ * embed.url, iframe src, pricing items[].href, etc. Live-Edit y editor admin
+ * usan `validateProps()` que lo aplica server-side antes de persistir.
+ */
+export function isSafeUrl(value: string): boolean {
+  if (typeof value !== "string") return false;
+  if (value.length > 2048) return false;
+  if (value === "") return true;
+  // Rechaza control chars (0x00-0x1f, 0x7f), whitespace al inicio, comillas, ángulos.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intencional — bloqueamos URLs con control chars (anti-XSS, anti-bypass de parsers HTML).
+  if (/[\x00-\x1f\x7f]/.test(value)) return false;
+  if (/^\s/.test(value)) return false;
+  if (/[\s<>"]/.test(value)) return false;
+  // Anchors puros
+  if (value.startsWith("#")) return !value.includes("\\");
+  // mailto:, tel: (alfanumérico/símbolos seguros tras los dos puntos)
+  if (/^mailto:[^\s<>"]+$/i.test(value)) return true;
+  if (/^tel:[+0-9\-() .]+$/i.test(value)) return true;
+  // http(s)://... (al menos 1 char tras //)
+  if (/^https?:\/\/[^\s<>"]+$/i.test(value)) return true;
+  // Path absoluta /... — rechaza protocol-relative `//` y bypass `/\`
+  if (value.startsWith("/")) {
+    if (value.startsWith("//") || value.startsWith("/\\")) return false;
+    return !/[\\]/.test(value);
+  }
+  return false;
+}
+
+const safeUrl = (defaultValue = "") =>
+  z
+    .string()
+    .max(2048)
+    .refine(isSafeUrl, {
+      message: "URL inválida (sólo http(s), rutas relativas, anchor, mailto:, tel:, vacío)",
+    })
+    .default(defaultValue);
+
+/**
+ * Variante de `safeUrl` para fields image/avatar/backgroundImage que típicamente
+ * vienen del DAM (UploadThing/Vercel Blob) o son `null` cuando no se ha elegido.
+ *
+ * Acepta: null, undefined, cadena vacía, http(s)://..., paths relativos.
+ * Bloquea: `data:`, `javascript:`, `file:`, protocol-relative `//`, `/\bypass`.
+ *
+ * Aunque el inspector del builder muestra un picker (no un input libre), el
+ * `propsSchema` corre server-side y debe defender en profundidad: un cliente
+ * malicioso podría enviar JSON crudo que omita el picker. El motor de render
+ * pinta `src` directamente — sin esta whitelist quedaba la puerta abierta a
+ * XSS de almacenamiento si un editor comprometido escribía `data:text/html,<script>`.
+ */
+const safeUrlNullable = () =>
+  z
+    .string()
+    .max(2048)
+    .refine(isSafeUrl, {
+      message: "URL inválida (sólo http(s), rutas relativas, vacío)",
+    })
+    .nullable()
+    .optional();
 
 // ============================================================
 // Definiciones
@@ -109,7 +205,7 @@ const SECTION: BlockSpec = {
       background: z.string().regex(colorRegex).default("transparent"),
       padding: z.string().default("py-20 px-6"),
       align: alignEnum.default("center"),
-      backgroundImage: z.string().nullable().optional(),
+      backgroundImage: safeUrlNullable(),
     })
     .partial(),
 };
@@ -360,7 +456,7 @@ const IMAGE: BlockSpec = {
   ],
   propsSchema: z
     .object({
-      src: z.string().nullable().optional(),
+      src: safeUrlNullable(),
       alt: z.string().default(""),
       width: z.enum(["sm", "md", "lg", "full"]).default("full"),
       aspectRatio: z.enum(["auto", "1/1", "16/9", "4/3", "9/16"]).default("auto"),
@@ -414,9 +510,7 @@ const GALLERY: BlockSpec = {
   ],
   propsSchema: z
     .object({
-      items: z
-        .array(z.object({ src: z.string().nullable().optional(), alt: z.string().default("") }))
-        .default([]),
+      items: z.array(z.object({ src: safeUrlNullable(), alt: z.string().default("") })).default([]),
       columns: z.coerce.number().int().min(2).max(4).default(3),
       gap: z.string().default("gap-3"),
     })
@@ -449,7 +543,7 @@ const VIDEO: BlockSpec = {
   ],
   propsSchema: z
     .object({
-      url: z.string().default(""),
+      url: safeUrl(""),
       aspectRatio: z.enum(["16/9", "4/3", "1/1", "9/16"]).default("16/9"),
       autoplay: z.boolean().default(false),
     })
@@ -470,7 +564,7 @@ const EMBED: BlockSpec = {
   ],
   propsSchema: z
     .object({
-      url: z.string().default(""),
+      url: safeUrl(""),
       height: z.coerce.number().int().min(80).max(2000).default(480),
     })
     .partial(),
@@ -515,7 +609,7 @@ const BUTTON: BlockSpec = {
   propsSchema: z
     .object({
       text: z.string().default("Botón"),
-      href: z.string().default("#"),
+      href: safeUrl("#"),
       variant: z.enum(["primary", "secondary", "ghost", "outline"]).default("primary"),
       size: z.enum(["sm", "md", "lg"]).default("md"),
       align: alignEnum.default("left"),
@@ -556,10 +650,84 @@ const CTA: BlockSpec = {
       title: z.string().default(""),
       subtitle: z.string().default(""),
       primaryText: z.string().default(""),
-      primaryHref: z.string().default("#"),
+      primaryHref: safeUrl("#"),
       secondaryText: z.string().default(""),
-      secondaryHref: z.string().default(""),
+      secondaryHref: safeUrl(""),
       align: alignEnum.default("center"),
+    })
+    .partial(),
+};
+
+const MOTION_HERO: BlockSpec = {
+  kind: "motion-hero",
+  label: "Hero animado",
+  icon: "Sparkles",
+  group: "Secciones",
+  description:
+    "Hero espectacular con 6 variants animados: Aurora, Magnetic, Spotlight, Typewriter, Marquee, Particles.",
+  canHaveChildren: false,
+  defaultProps: {
+    variant: "aurora",
+    badge: "✦ Nuevo",
+    title: "Construye algo espectacular",
+    subtitle: "Hero animado con Framer Motion. Editable como cualquier otro bloque.",
+    primaryText: "Empezar",
+    primaryHref: "#",
+    secondaryText: "Ver demo",
+    secondaryHref: "#",
+    marqueeItems: ["Notion", "Vercel", "Linear", "Framer", "Stripe", "Resend"],
+  },
+  propsSpec: [
+    {
+      key: "variant",
+      label: "Estilo de animación",
+      kind: "select",
+      group: "Estilo",
+      description:
+        "Aurora · gradiente blur. Magnetic · botones siguen cursor. Spotlight · cursor revela. Typewriter · type-on. Marquee · logos infinitos. Particles · red canvas.",
+      options: [
+        { value: "aurora", label: "Aurora — gradiente animado" },
+        { value: "magnetic", label: "Magnetic — CTAs magnéticos" },
+        { value: "spotlight", label: "Spotlight — cursor revela" },
+        { value: "typewriter", label: "Typewriter — type-on" },
+        { value: "marquee", label: "Marquee — logos infinitos" },
+        { value: "particles", label: "Particles — red canvas" },
+      ],
+    },
+    { key: "badge", label: "Badge", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+    { key: "primaryText", label: "CTA primario", kind: "text", group: "Contenido" },
+    { key: "primaryHref", label: "URL primario", kind: "url", group: "Contenido" },
+    { key: "secondaryText", label: "CTA secundario", kind: "text", group: "Contenido" },
+    { key: "secondaryHref", label: "URL secundario", kind: "url", group: "Contenido" },
+    {
+      key: "marqueeItems",
+      label: "Items marquee (solo Marquee)",
+      kind: "items",
+      group: "Contenido",
+      description: "Lista de logos / textos a desfilar. Solo afecta al variant Marquee.",
+      itemSpec: [{ key: "label", label: "Texto", kind: "text" }],
+      itemDefault: { label: "Marca" },
+    },
+  ],
+  propsSchema: z
+    .object({
+      variant: z
+        .enum(["aurora", "magnetic", "spotlight", "typewriter", "marquee", "particles"])
+        .default("aurora"),
+      badge: z.string().default(""),
+      title: z.string().default(""),
+      subtitle: z.string().default(""),
+      primaryText: z.string().default(""),
+      primaryHref: safeUrl("#"),
+      secondaryText: z.string().default(""),
+      secondaryHref: safeUrl("#"),
+      // marqueeItems puede llegar como string[] (legacy) o array de objects {label}
+      // para encajar con el itemSpec del inspector. Aceptamos ambos.
+      marqueeItems: z
+        .union([z.array(z.string()), z.array(z.object({ label: z.string() }))])
+        .optional(),
     })
     .partial(),
 };
@@ -620,10 +788,10 @@ const HERO: BlockSpec = {
       title: z.string().default(""),
       subtitle: z.string().default(""),
       primaryText: z.string().default(""),
-      primaryHref: z.string().default("#"),
+      primaryHref: safeUrl("#"),
       secondaryText: z.string().default(""),
-      secondaryHref: z.string().default("#"),
-      image: z.string().nullable().optional(),
+      secondaryHref: safeUrl("#"),
+      image: safeUrlNullable(),
       layout: z.enum(["centered", "split"]).default("centered"),
       background: z.enum(["aurora", "grid", "solid"]).default("aurora"),
     })
@@ -768,7 +936,7 @@ const PRICING: BlockSpec = {
             interval: z.string().default("mes"),
             features: z.string().default(""),
             cta: z.string().default(""),
-            href: z.string().default("#"),
+            href: safeUrl("#"),
             highlight: z.boolean().default(false),
           }),
         )
@@ -828,7 +996,7 @@ const TESTIMONIALS: BlockSpec = {
             quote: z.string().default(""),
             author: z.string().default(""),
             role: z.string().default(""),
-            avatar: z.string().nullable().optional(),
+            avatar: safeUrlNullable(),
           }),
         )
         .default([]),
@@ -1029,9 +1197,9 @@ const PAYWALL: BlockSpec = {
       title: z.string().default("Contenido para miembros"),
       message: z.string().default(""),
       ctaLabel: z.string().default("Hacerme miembro"),
-      ctaHref: z.string().default("/miembros"),
+      ctaHref: safeUrl("/miembros"),
       secondaryLabel: z.string().default(""),
-      secondaryHref: z.string().default(""),
+      secondaryHref: safeUrl(""),
       teaser: z.enum(["fade", "hard"]).default("fade"),
     })
     .partial(),
@@ -1058,6 +1226,99 @@ const SYMBOL: BlockSpec = {
   propsSchema: z.object({ symbolId: z.string().nullable().optional() }).partial(),
 };
 
+/**
+ * Bloque A/B: contiene N hijos. Cada hijo debe ser un bloque "ab-variant"
+ * con prop `variantId`. En SSR el render lee `ctx.abMap` para el `testKey`
+ * y muestra sólo el child cuyo variantId matchea. Si no hay test activo o
+ * el viewer es admin con bypassGates, se muestra el primer child (control).
+ */
+const AB_GROUP: BlockSpec = {
+  kind: "ab",
+  label: "Variantes A/B",
+  icon: "FlaskConical",
+  group: "Especial",
+  description:
+    "Muestra una variante distinta a cada visitante según un test A/B. Los hijos deben ser bloques 'Variante'.",
+  canHaveChildren: true,
+  defaultProps: {
+    testKey: "",
+  },
+  propsSpec: [
+    {
+      key: "testKey",
+      label: "Key del test",
+      kind: "text",
+      group: "Contenido",
+      description: "Slug del test A/B definido en /admin/ab-tests",
+    },
+  ],
+  // testKey vacío es válido durante drag-drop (acaba de insertarse el bloque);
+  // el render hace fallback a primer child. La estrictez ocurre en `collectAbKeys`
+  // (filtra con regex `{1,64}` requiriendo al menos 1 char) y en server
+  // actions de admin (rejectan create/update con testKey vacío).
+  propsSchema: z
+    .object({
+      testKey: z
+        .string()
+        .max(64)
+        .regex(/^[a-z0-9_-]*$/i, "Sólo letras, números, _ y -")
+        .default(""),
+    })
+    .partial(),
+  defaultChildren: () => [
+    {
+      id: newId(),
+      kind: "ab-variant",
+      props: { variantId: "control", label: "Control" },
+      children: [],
+    },
+    {
+      id: newId(),
+      kind: "ab-variant",
+      props: { variantId: "v1", label: "Variante 1" },
+      children: [],
+    },
+  ],
+};
+
+/**
+ * Hijo de "ab": container que se muestra solo si la variant resuelta para
+ * el testKey del padre coincide con `variantId`. La selección la hace el
+ * render, este bloque sólo encapsula contenido.
+ */
+const AB_VARIANT: BlockSpec = {
+  kind: "ab-variant",
+  label: "Variante",
+  icon: "Split",
+  group: "Especial",
+  description: "Wrapper de un branch de un test A/B. Insertar dentro de 'Variantes A/B'.",
+  canHaveChildren: true,
+  defaultProps: {
+    variantId: "v1",
+    label: "Variante",
+  },
+  propsSpec: [
+    {
+      key: "variantId",
+      label: "ID de la variante",
+      kind: "text",
+      group: "Contenido",
+      description: "Debe coincidir con un id de variant en el test",
+    },
+    { key: "label", label: "Etiqueta humana", kind: "text", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      variantId: z
+        .string()
+        .max(32)
+        .regex(/^[a-z0-9_-]+$/i)
+        .default("v1"),
+      label: z.string().max(120).default(""),
+    })
+    .partial(),
+};
+
 // ============================================================
 // Registry
 // ============================================================
@@ -1075,6 +1336,7 @@ export const BLOCK_SPECS: BlockSpec[] = [
   BUTTON,
   CTA,
   HERO,
+  MOTION_HERO,
   FEATURES_GRID,
   PRICING,
   TESTIMONIALS,
@@ -1084,6 +1346,12 @@ export const BLOCK_SPECS: BlockSpec[] = [
   DIVIDER,
   PAYWALL,
   SYMBOL,
+  AB_GROUP,
+  AB_VARIANT,
+  // Bloques de plantillas espectaculares (tpl-*) — hidden del palette,
+  // editables vía inspector. Renderizados como client components 1:1 con
+  // las showcases originales.
+  ...SPECTACULAR_SPECS,
 ];
 
 const REGISTRY = new Map(BLOCK_SPECS.map((s) => [s.kind, s] as const));
@@ -1106,6 +1374,9 @@ export function newBlockNode(kind: BlockKind): BlockNode {
 export function blocksByGroup(): Record<BlockSpec["group"], BlockSpec[]> {
   const out: Record<string, BlockSpec[]> = {};
   for (const s of BLOCK_SPECS) {
+    // Bloques tpl-* se editan desde el inspector pero no aparecen en el palette
+    // de "Añadir bloque" — son secciones de plantillas espectaculares.
+    if (s.hiddenInPalette) continue;
     if (!out[s.group]) out[s.group] = [];
     out[s.group]!.push(s);
   }

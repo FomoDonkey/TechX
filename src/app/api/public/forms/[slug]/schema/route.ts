@@ -11,13 +11,16 @@
 
 import { getPublishedFormBySlug } from "@/forms/lib";
 import type { FormSchema, FormSettings } from "@/forms/types";
+import { resolveWorkspaceIdByHost } from "@/redirects/runtime";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ slug: string }> }) {
   const { slug } = await ctx.params;
-  const form = await getPublishedFormBySlug(slug);
+  const host = req.headers.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  const form = workspaceId ? await getPublishedFormBySlug(workspaceId, slug) : null;
   if (!form) {
     return NextResponse.json(
       { error: { code: "not_found", message: "Form no encontrado o no publicado" } },
@@ -55,9 +58,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   );
 }
 
-export async function OPTIONS(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function OPTIONS(req: Request, ctx: { params: Promise<{ slug: string }> }) {
   const { slug } = await ctx.params;
-  const form = await getPublishedFormBySlug(slug);
+  const host = req.headers.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  const form = workspaceId ? await getPublishedFormBySlug(workspaceId, slug) : null;
   return new Response(null, { status: 204, headers: corsHeaders(form) });
 }
 

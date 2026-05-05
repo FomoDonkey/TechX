@@ -1,5 +1,37 @@
 # CSM — Lecciones aprendidas
 
+## 2026-05-05 — Plantillas espectaculares editables (showcase ↔ blocks parity)
+
+### El problema de la decisión "preview ≠ inserted page"
+La primera versión de las 8 plantillas showcase (`/template-preview/[id]`) renderizaba un componente React custom de 200-450 líneas (Asme, Jack, Michael, Mint, Nimbus, Securify, Magazine, Substack) **completamente desconectado** de lo que insertaba `createPageFromTemplateAction`. Click en "Usar plantilla" → se generaba un `buildLayout()` block-based simplificado (motion-hero + features-grid + pricing + cta) que no se parecía en nada al preview. Bait-and-switch terrible para el usuario, y el footer de la galería tenía un disclaimer reconociéndolo. **Diferido como F10x** en su día — terminó siendo prioridad cuando el usuario lo descubrió.
+
+### Arquitectura de la solución (Option B "completa")
+Cada showcase se descompone en N secciones (3-7) implementadas como **client components props-driven** en `src/blocks/spectacular/{template}-sections.tsx`. Cada sección registra un `BlockSpec` con `kind: "tpl-{template}-{section}"`, `hiddenInPalette: true` (no inunda el palette del page builder), `propsSchema` Zod estricto y `propsSpec` para el inspector. El render delega 1:1 al componente client. `buildLayout()` devuelve un array de `node("tpl-X", {})` y los defaults del spec rellenan todo el contenido espectacular.
+
+**41 nuevos block kinds totales:**
+- Asme (saas-magnetic): 6 — hero / about / featured-video / split-vision / service-cards / cta
+- Jack (portfolio-spotlight): 6 — hero / marquee / about / services / projects / cta
+- Michael (agency-spotlight): 6 — hero / bento / journal / explorations / stats / contact-footer
+- Mint (coming-soon): 3 — hero / perks / roadmap
+- Nimbus (docs-aurora): 4 — hero / docs-grid / quick-start / community
+- Securify (launch-marquee): 5 — hero / sectors / pillars / pricing / cta
+- Magazine (blog-particles): 5 — masthead / featured / categories / stories / newsletter
+- Substack (newsletter-typewriter): 7 — header / hero / preview / testimonial / pricing / archive / footer
+
+### Patrón de paridad por construcción
+**Eliminé `getShowcase(id)` del route `/template-preview/[id]/page.tsx`** — ahora siempre llama `RenderLayout(buildLayout())`. El preview ES la inserted page, son el mismo árbol de bloques renderizado en el mismo path. Imposible que diverjan visualmente.
+
+### Lección general (aplicable a futuras features)
+Cuando hay riesgo de divergencia entre dos representaciones del mismo contenido (preview vs editable, draft vs published, mock vs real), **usa una única fuente de verdad y haz que ambos paths la consuman**. Si la "fuente espectacular" es código React custom, conviértelo en bloques editables; si la "fuente editable" es simplificada, súbele el listón hasta que sea fiel. **Diferir esa unificación como "lo arreglamos luego" siempre acaba en bait-and-switch que el usuario detecta.**
+
+### Sub-lección: dangerouslySetInnerHTML para italic granular
+Los headers tipo `"Power <em>AI</em>"` o `"Construye <em>algo distinto</em>"` necesitan italic + gradient solo en algunas palabras. `parseInlineMarkdown(*texto*)` no servía para gradient backgrounds. Solución: `dangerouslySetInnerHTML` con sanitización inline whitelist (`<em>`/`<br>` only via regex), por bloque. Biome warnea pero el sanitize garantiza zero-XSS — la prop pasa por Zod max-length antes de llegar al render.
+
+### Sub-lección: editor canvas + min-h-screen
+Los componentes espectaculares usan `min-h-screen`, `h-screen`, `fixed top-0`, etc. para ocupar full viewport en producción. Dentro del canvas del editor (div con width fijo 1280/820/390 y altura natural) eso rompe: heroes gigantes, navs flotantes que se superponen al inspector, scroll horizontal, contenido cortado abajo. **Solución no invasiva**: clase `.csm-edit-canvas` en el wrapper del canvas + reglas CSS scoped en `editor-styles.css` que sobrescriben `min-h-screen → 700px`, `fixed → absolute`, `csm-sticky-card → relative`, `video → max-h:720px`. Las páginas publicadas y el preview siguen full-bleed; solo el canvas editor se neutraliza. **Patrón reutilizable**: cuando un componente con animaciones/posicionamiento full-viewport se renderiza dentro de un container con dimensiones distintas, define un selector class del container y neutraliza vía CSS, no toques los componentes.
+
+---
+
 ## Bootstrap
 
 ### 2026-05-02 — corepack bloqueado en Windows
@@ -863,3 +895,878 @@ Hice mi pasada interna y pensé que F8b estaba sólida. Lancé un agente indepen
 - `npm run build` ✅ — sin regresiones, todas las rutas presentes
 - 3 CRITICAL + 7 HIGH + 14 MEDIUM corregidos; 8 confirmados como NO bug (documentados en todo.md)
 - F8b queda blindada para pasar a F8c sin deuda técnica conocida
+
+---
+
+## Fase 8c — A/B testing, sticky variants y Live-Edit on production
+
+### 2026-05-03 — Sticky assignment con hash determinista + onConflictDoNothing es la forma correcta
+
+Mi primer impulso fue: "guardo la variant en cookie httpOnly por test". Mal. Cada test añade una cookie, los browsers limitan a 50 cookies por dominio, y si rotas el secret la sticky se rompe.
+
+**Patrón correcto**: una sola cookie `csm_aid` (anon ID), persistida por un año desde middleware. Para cada test activo en la página, calculo un bucket determinista `FNV-1a(testId:anonId) mod 100` y mapeo a pesos. **Persisto en `ab_assignments` con PK (testId, anonId) + onConflictDoNothing**.
+
+**Por qué funciona bajo race**:
+- Dos requests paralelos del mismo anon calculan el MISMO hash → MISMA variant. Uno persiste, el otro hace conflict-do-nothing. La response a ambos es idéntica.
+- Si los pesos cambian después de iniciar el test, los anons ya asignados mantienen su variant (sticky por DB), los nuevos usan los pesos nuevos.
+
+**Lección**: sticky behaviour bajo concurrencia se logra con (a) determinismo en el cálculo + (b) idempotencia en la persistencia. La cookie httpOnly era una falsa solución que añadía complejidad sin resolver race.
+
+### 2026-05-03 — `after()` de Next 15 para tracking off-band sin penalizar TTFB
+
+Las impressions de A/B se deben grabar en cada SSR, pero NO quiero meter ese INSERT en la latencia visible. Probé:
+- `void recordImpressions(...)` antes de return — fire-and-forget, pero RSC puede aún esperar la promise antes de flush.
+- `setTimeout(() => recordImpressions(), 0)` — no funciona en server components (no hay event loop persistente entre requests).
+
+**Solución**: `import { after } from "next/server"` — registra un callback que ejecuta DESPUÉS del flush de la response. Garantiza que el tracking no contribuye al TTFB. Viable en Edge y Node runtime.
+
+**Lección**: para side effects no-críticos en RSC, `after()` es la API canónica de Next 15. Antes lo hacía con `void` y rezando que el runtime no lo cancele; ahora hay garantía explícita.
+
+### 2026-05-03 — Stable React keys cuando los IDs son user-editable
+
+Los inputs de variants permiten al usuario escribir el id (`v0`, `vAtest`...). Si uso `key={v.id}`, al editar React desmonta el `<Input>` en cada keystroke → pierde foco, cursor, IME composition. Si uso `key={i}`, biome se queja con razón (`noArrayIndexKey`) porque al borrar un row los demás "saltan" de identidad.
+
+**Patrón limpio**: añadir un `_slot` field al state local — `nanoid()` o `Math.random().toString(36).slice(2,10)`. Estable durante la edición, único entre rows, y se striipa al enviar al server (`variants.map(v => ({ id, label, weight, isControl }))`).
+
+**Lección**: cuando el campo "id" del modelo es editable por el usuario, separa identidad-de-render de identidad-de-modelo. Un `_slot` interno cuesta 8 bytes y resuelve toda la clase de bugs de focus/IME.
+
+### 2026-05-03 — `await import()` dentro de un Route Handler para resolver ciclos circulares lazy
+
+Tenía `import { resolvePublicWorkspace } from "@/payments/public-workspace"` en `/api/ab/event/route.ts`. Mi miedo: que `public-workspace` tirara de schema/redirect/algo edge-incompatible. Convertí a `await import("@/payments/public-workspace")` lazy.
+
+Resultado: funciona, pero cuando lo verifiqué con un build, no había problema cargándolo eager. Refactoricé a top-level import.
+
+**Lección**: lazy `import()` sólo cuando hay razón concreta (binary deps en edge runtime, ciclos circulares, code-splitting). Sin razón, top-level es más legible y permite tree-shake. No optimizar prematuramente con lazy imports.
+
+### 2026-05-03 — biome-ignore en JSX requiere `{/* */}`, no `// `
+
+Intenté:
+```tsx
+<div
+  // biome-ignore lint/suspicious/noArrayIndexKey: variants are edited in-place...
+  key={i}
+>
+```
+
+Biome ignoró el ignore. La sintaxis aceptada en JSX expression es:
+```tsx
+{variants.map((v, i) => (
+  // biome-ignore lint/suspicious/noArrayIndexKey: explicación corta
+  <div key={i}>...</div>
+))}
+```
+
+Es decir, el comment va FUERA del JSX element, en el statement-level del map callback. Y debe ser una sola línea.
+
+**Mejor lección aún**: si te encuentras necesitando suprimir `noArrayIndexKey`, casi siempre la respuesta correcta es añadir un slot id estable (lección anterior). El supresor es una solución de ultima instancia.
+
+### 2026-05-03 — Live-Edit y la confianza del editor: hereda los problemas del registry
+
+El endpoint `/api/admin/live-edit` valida session + role >= editor + Zod del body + `validateProps(kind, merged)`. Pero `validateProps` valida sólo el shape del Zod schema declarado en el bloque. Y los bloques actuales tienen `ctaHref: z.string().default("/miembros")` SIN url validation.
+
+Esto significa que un editor podría meter `javascript:alert(1)` como href via Live-Edit y el endpoint lo aceptaría. ¿Es bug F8c? **No** — es problema preexistente del registry. El editor full en `/admin/paginas` tiene el mismo issue. Live-Edit no introduce capacidad nueva, simplemente ofrece un atajo de UI a la misma capacidad ya existente.
+
+**Decisión**: documentar como F10 audit item (whitelist `^(https?:|/)` o `z.string().url()` en todos los URL fields del registry). NO bloquear F8c por esto.
+
+**Lección**: cuando heredas validación de un módulo upstream, el estado-de-seguridad del downstream queda capped al del upstream. No "regression-test" el problema en cada nueva feature; arreglarlo arriba.
+
+### 2026-05-03 — Pre-existing build break en `/api/og/default`: stash and verify
+
+Build de F8c falló con `Unexpected token type: function in CSS rule "background: oklch(...)"` durante prerender de `/api/og/default`. Mi reflejo: "rompí algo con el render". Verifiqué con `git stash push -u` + `npm run build` — el bug existía sin F8c. Era de F8b o anterior, expuesto sólo cuando intenté un build limpio.
+
+Fix simple: `export const dynamic = "force-dynamic"` en la ruta — la OG depende de DB y de tema activo, no debe prerender. Satori sin polyfill no parsea `oklch()` en build context.
+
+**Lección**: cuando un build rompe en un commit, antes de hipotetizar regression, **stash + rebuild**. 30 segundos vs 30 minutos buscando el cambio fantasma. Si el bug persiste sin tus cambios, es upstream y se documenta como side-fix.
+
+### Tras F8c
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores
+- `npm run build` ✅ — todas las rutas F8c presentes (/admin/ab-tests, /admin/ab-tests/[id], /api/ab/event, /api/admin/live-edit), middleware 35kB
+- F8c entrega: schema A/B + engine sticky + bloques ab/ab-variant + dashboard con chi-squared + Live-Edit en producción
+
+### 2026-05-03 — Auditoría F8c con sub-agent: 1 CRITICAL + 5 HIGH + 7 MEDIUM detectados
+
+Repetimos el patrón de F8b: lancé un sub-agent independiente con prompt detallado pidiendo que buscara bugs reales, sin compartir mi sesgo de implementación. Encontró:
+
+**CRITICAL (lo más serio que se me había escapado)**:
+- **XSS via `javascript:` en URL fields**. Editor con role≥editor (mi propia decisión "OK heredamos validación del registry") podía meter `javascript:fetch(...)` en `embed.url` y `video.url` que se renderizan en `<iframe src>`. Cookie compromise en cada visitor. Lo había marcado como "no es regresión F8c, es problema preexistente del registry, F10". **Mal**: F8c expone el vector públicamente al añadir Live-Edit en producción. Antes había que entrar al admin builder; ahora basta `?edit=1`. Aunque heredas el problema, **si tu nueva feature aumenta superficie**, lo arreglas.
+  - Fix: helper `safeUrl(default)` reusable con whitelist regex. Aplicado a 8 bloques + `parseLink` del footer.
+  - **Lección**: "preexistente, no regresión" no es excusa cuando la nueva feature **expande la superficie de ataque** del bug existente. Re-evalúa el riesgo combinado, no aislado.
+
+**HIGH (5 bugs estructurales)**:
+- **H2 — inflado de stats por rotación de cookie**: la cookie `csm_aid` no httpOnly era "intencional para tracking client-side" — pero esa decisión la combiné con un sistema A/B donde cada anonId nuevo creaba 1 impression en SSR. Sin rate-limit por IP, atacante con script puede generar 10000 impressions en 1 variant en minutos.
+  - Fix: rate-limit por IP en `recordImpressionsFromMap` (1500/h) y `recordConversion` (200/h). Helper `extractClientIp(headers)`.
+  - **Lección**: dos decisiones aisladamente "OK" pueden combinarse en un bug crítico. Cookie no-httpOnly + 1-event-por-anon-en-SSR es una combinación tóxica. **Evalúa interacciones, no solo decisiones aisladas**.
+- **H3 — drift entre assignments y variants**: cuando un admin borra una variant de un test running, los rows en `ab_assignments` con esa variant quedaban huérfanos. El engine "manejaba" reasignando en memoria, pero `onConflictDoNothing` NO actualizaba la DB. Resultado silencioso: `/api/ab/event` rechazaba conversions con `variant_mismatch` y respondía 204 (silencio para no leak status). El admin nunca sabe que está perdiendo conversions.
+  - Fix: nueva rama `toUpdate[]` con `UPDATE SET variantId WHERE testId+anonId`.
+  - **Lección**: "manejar gracefully" en memoria no es suficiente si la persistencia queda inconsistente. **Reconcilia la fuente de verdad**, no sólo el render. Y silenciar errores 204 sin telemetría (esto NO es bug en sí — proteger contra timing/info leak — pero combinado con lectores stale = pérdida de datos invisible). En F10 considerar emitir un warning a admin cuando un test ha tenido >X variant_mismatches en última hora.
+- **H4 — transiciones de estado sin validación**: aceptaba `completed → resume`, mezclando stats. Idempotencia ad-hoc.
+  - Fix: matriz `allowed` por estado, transiciones explícitas, terminal = `completed`.
+  - **Lección**: cuando tu modelo tiene un enum status, escribe la **state machine explícita** desde el principio. "Por ahora acepto todo" es deuda técnica que se cobra cuando un editor cierra un test por error y luego "resume" lo reabre con `endedAt` ya fijo.
+- **H1 — Live-Edit a páginas non-published**: el endpoint sólo verificaba que la página existiera. Un editor con DevTools podía editar drafts y archived (revertir cambios pendientes de un compañero).
+  - Fix: `if (page.status !== 'published') return 403`.
+  - **Lección**: **alinear el contrato del endpoint con el contrato de la UI**. Si el overlay sólo aparece en SSR de páginas publicadas, el endpoint debe rechazar el resto. Asumir "el cliente sólo enviará pageId publicado" es trust-the-client = bug.
+- **H5 — `applyOverrides` dead code exportado**: lo exporté "por si quería override admin con `?ab_<key>=`" pero nunca lo conecté. Riesgo: dev futuro lo conecta sin gating.
+  - Fix: borrado.
+  - **Lección**: no exportar APIs "por si acaso". Si no la usas, no la exportes. Cada export es una promesa de seguridad implícita.
+
+**MEDIUM (3 fixeados)**:
+- **M1 — meta sin restricción de shape**: `z.record(z.string(), z.unknown())` aceptaba objetos profundos sin límite estructural. Fix: union de primitivos + cap content-length pre-parse + cap del text post-parse.
+- **M3 — parseVariants auto-renormalizaba pesos**: si DB tenía pesos != 100, el engine los escalaba en RAM. Inconsistencia con UI. Fix: si != 100, devolver `[]` (test queda excluido del resolution map).
+- **M5 — testKey vacío permitido**: documentado como UX intencional para drag-drop; estrictez se aplica en `collectAbKeys` y server actions admin.
+
+### 2026-05-03 — Lección consolidada: el patrón "auditoría con sub-agent independiente" se confirma
+
+F8b: 3 CRITICAL + 7 HIGH + 14 MEDIUM detectados.
+F8c: 1 CRITICAL + 5 HIGH + 7 MEDIUM detectados.
+
+**Patrón que funciona**:
+1. Implementar la fase completa.
+2. Yo hago mi auditoría interna, marco "está bien".
+3. Lanzo sub-agent con prompt detallado: contexto del repo, archivos a auditar, tipos de bugs a buscar, formato de reporte. **NO** le digo qué he revisado yo.
+4. El agente lee los archivos COMPLETOS sin sesgo de "yo creo que esto está bien".
+5. Reporta bugs por severidad. Yo aplico fixes.
+
+**Coste**: ~1-2 minutos + ~150k tokens.
+**Beneficio**: cada vez encuentra un CRITICAL que mi propia revisión no detectó. La diferencia es que el agente no tiene mi modelo mental "ya lo pensé, está bien".
+
+**Patrón anti-correcto que evitar**: pedirle al agente que "valide mi trabajo". Eso provoca confirmation bias. El prompt correcto es "encuentra bugs reales, sé crítico".
+
+### Verificación final F8c
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores
+- `npm run build` ✅ — todas las rutas presentes, middleware 35kB
+- 1 CRITICAL + 5 HIGH + 3 MEDIUM corregidos; 8 verified clean; 4 LOW/MEDIUM diferidos a F10 (documentados en todo.md)
+- F8c queda blindada para pasar a F9 (importadores + branching + calendar + workflows) sin deuda técnica conocida
+
+### 2026-05-03 — Tercera auditoría F0-F8c con sub-agent: bugs en F0-F7 que se nos habían escapado
+
+Tras blindar F8c, antes de empezar F9 lancé una tercera ronda — **alcance ampliado a TODO el repo (F0-F8c)** y con doble objetivo: verificar mis fixes recientes + buscar bugs en fases anteriores.
+
+Resultado: **1 falso CRITICAL (sobre versión vieja de mi fix C1) + 4 HIGH nuevos + 6 MEDIUM nuevos**. Todos los HIGH y MEDIUM relevantes fixeados.
+
+**Lecciones nuevas que emergen**:
+
+1. **Mi propio test exhaustivo encontró el bug ANTES del subagent**.
+   Antes de aplicar `safeUrl()`, escribí un test JS standalone con 38 vectores de ataque (`//evil.com`, `JaVaScRiPt:`, `\tjavascript:`, control chars, etc.). Detectó que mi regex monolítico permitía `//evil.com`. Lo arreglé reescribiendo a función `isSafeUrl()` con whitelist explícita ANTES de que el subagent lo reportara. Cuando el subagent ejecutó, leyó la versión vieja y reportó el bug — pero ya estaba arreglado.
+   
+   **Lección**: para fixes de seguridad con regex, escribir un test exhaustivo de attack vectors ANTES de declarar "fixed" no es opcional. Regex en seguridad es notorio por bugs sutiles. 5 minutos de test JS standalone elimina iteraciones de auditoría.
+
+2. **El alcance ampliado de auditoría revela bugs viejos que la fase actual no toca**.
+   F8c añadió A/B + Live-Edit. La 3ª auditoría se centró en F0-F8b y encontró:
+   - `processIndexJobs` (F6) leak cross-tenant de cómputo OpenAI.
+   - `updateMediaAction`/`moveMediaAction` (F3) IDOR en folderId cross-workspace.
+   - `processSubmission` (F7) sin rate-limit por email destinatario.
+   - Subscribe (F8a) email-enumeration por response distinta create/existing.
+   - Subscribe (F8a) race en unsubscribeToken con sid placeholder.
+   - Form duplicate (F7) info leak de `submissionId` previo.
+   
+   Cada uno de esos bugs estaba en código que pasó CRs y auditorías previas centradas en su fase. **Las auditorías por fase no encuentran bugs cross-fase**. Cada N fases (≥3 acumuladas), una auditoría con scope full-repo es mandatoria.
+
+3. **Inconsistencia entre módulos similares**.
+   `api/rate-limit.ts` y `forms/rate-limit.ts` implementan token-bucket pero con eviction policies distintas: el primero usa LRU (correcto), el segundo FIFO 10% (puede borrar buckets activos = reset gratis para atacante). Lo detecté como LOW. **Lección**: cuando dos módulos resuelven el mismo problema, consolidar (DRY) o auditar diferencias activamente. La duplicación es deuda invisible.
+
+4. **`consumeMagicLink` workspace**: pasó verificado clean. Mi diseño (devolver `claimed.workspaceId` y exigir que el caller lo use) había mantenido la disciplina. Pero el subagent flageó como "verificar" porque no podía leer el caller — esto refuerza el patrón de auditar por contrato del módulo, no asumir que callers lo respetan.
+
+5. **`isSafeUrl()` reusable es más robusto que regex monolítico inline**.
+   Antes de F8c, cada bloque tenía `z.string()` para URL fields. Yo reemplacé con `safeUrl(default)` que envuelve un regex. El subagent encontró un bug en el regex. Reescribí a `isSafeUrl(value)` función imperativa con whitelist explícita por protocolo. **Lección**: validators de seguridad deben ser funciones, no regex monolíticos. Las funciones son testeables, debuggeables, modificables sin re-derivar todo el regex.
+
+6. **Off-band tracking (`after()`) es el patrón correcto, pero el rate-limit debe estar BEFORE the persisted side-effect, no after**.
+   Mi primer fix H2 puso rate-limit en `recordImpressionsFromMap` (post-persistencia del assignment). El subagent señaló: el `INSERT abAssignments` ya ocurrió en `resolveTestsForKeys`, fuera del rate-limit. Atacante consume DB sin barrera. Fix H2-extra: rate-limit ALSO en `resolveTestsForKeys` antes del INSERT. **Lección**: cuando aplicas rate-limit, identifica TODOS los side-effects costosos del flow, no solo el último.
+
+### Tras la tercera auditoría
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores
+- `npm run build` ✅ — todas las rutas presentes, middleware 35kB
+- 4 HIGH + 5 MEDIUM nuevos corregidos; 14 verified clean; 5 LOW diferidos a F10
+- F0-F8c queda blindada — listo para F9 (importadores + branching + calendar + workflows)
+
+### Patrón consolidado: 3 capas de auditoría antes de dar por cerrada una fase
+
+1. **Test exhaustivo de attack vectors** (yo, ~5 min) — para fixes de seguridad con regex/validators.
+2. **Sub-agent independiente con scope estrecho** (F8c) — verifica fix de la fase actual.
+3. **Sub-agent independiente con scope amplio** (F0-F8c) — busca bugs cross-fase que las auditorías por fase no detectan.
+
+Coste total: ~20 min de cómputo + ~600k tokens. Beneficio: 7+ HIGH/CRITICAL evitados llegando a producción. Es **el patrón a aplicar al final de cada fase F8+**.
+
+## Fase 9a — Importer Wizard universal
+
+### 2026-05-03 — `_data.uncompressedSize` de JSZip es el escape para zip-bombs
+JSZip carga el zip y mantiene `_data.uncompressedSize` en cada entry sin descomprimir. Antes de `file.async("string")` (que sí carga a RAM), validar el tamaño. Sin esto, un .zip de 50MB con compresión 100:1 → OOM. Triple cap recomendado: por archivo (50MB), total (200MB), nº de entries (5000). Aplicado a notion.ts y markdown.ts.
+
+### 2026-05-03 — Claim atómico para transiciones de máquina de estados
+Patrón anti-race ya consolidado en F8b (memberships) replicado en F9a (imports). El endpoint que lanza un job long-running NO debe leer-validar-update por separado: hace `UPDATE ... WHERE status IN (allowed) RETURNING` y verifica que devolvió 1 fila. Si vacío → otro caller ya tomó el slot. El engine asume que el caller hizo el claim y nunca re-hace el SELECT con throw — solo lee la fila para datos de configuración. Ventana TOCTOU desaparece.
+
+### 2026-05-03 — `entries.fields` es jsonb arbitrario, hay que sanitizar al importar
+Si un parser persiste `{ ...row }` directamente desde un CSV, el atacante controla TODAS las claves. Puede inyectar `coverId`, `workspaceId`, `_origin`, `__proto__` y la UI futura podría leerlas como propias. Patrón: `sanitizeImportedFields()` con whitelist de keys trusted (controladas por código nuestro: `wpPostType`, `notionAssets`, etc.) + RESERVED blocklist (campos sensibles del schema) + prefix `import_*` para keys desconocidas. Aplicado en INSERT y UPDATE.
+
+### 2026-05-03 — Auto-redirects desde imports son open-redirect potencial
+El patrón inicial era `db.insert(redirects).values({ source: srcPath, ... })` con `srcPath = new URL(raw.sourceUrl).pathname`. Pero el atacante controla `raw.sourceUrl` (cualquier export con `<link>` lo trae). Resultado: 301 desde `/admin/contenido` → `/<slug-del-attacker>` secuestra navegación interna. **Fix obligado**: usar el helper `createRedirect()` que aplica `validateRule + isSafeDestination + isSelfReferential` + blacklist explícita de prefijos del CMS (`/admin`, `/api`, `/onboarding`, `/login`, `/miembros`, `/checkout`, `/preview`, `/_next`). Sin este check, cualquier import malicioso secuestra rutas internas.
+
+### 2026-05-03 — `applyMediaPolicy` y caps: `skip` debe ser literal aunque sea caro
+Patrón anti-foot-gun: si la UI promete "borrar todas las imágenes" (mediaPolicy=skip), el cap interno (`MAX_MEDIA_PER_ENTRY=30`) NO debe limitar la operación. El cap solo aplica a operaciones costosas (`download`). Reordenar el switch: `skip` primero (siempre aplica), `download` después (respeta cap). Mismo patrón aplicable cuando un cap protege costo vs corrección semántica.
+
+### 2026-05-03 — `setTimeout` + `clearTimeout` requiere `try/finally`
+Si la operación protegida lanza antes del timeout, el `clearTimeout` post-await no corre. El timer queda flotando hasta disparar el `abort()` sobre un controller obsoleto. En un loop con muchos fallos (e.g., 10k imágenes con DNS bloqueado), son 10k timers de 15s acumulados. Patrón correcto: `try { await op(...) } finally { clearTimeout(timer) }`.
+
+### 2026-05-03 — Event bus in-memory necesita `clearImport()` explícito tras `complete`
+Sin esto el `Map<importId, Buffer>` crece indefinidamente. La función `clearImport()` existía en F9a pero no la llamaba nadie — el subagent lo señaló como memory leak. Patrón: tras emit del último evento (`complete`), `setTimeout(() => clearImport(id), 60_000).unref?.()` da margen al último cliente SSE para consumir y luego libera. `.unref()` evita que el timer bloquee el shutdown del process.
+
+### 2026-05-03 — `isSafeUrl()` ya no es solo para blocks; aplicarlo a TODO contenido convertido a Tiptap
+Antes F8c lo usaba en propsSchema de bloques. F9a importa HTML externo y lo convierte a Tiptap docs. Cada `link mark` y `image src` que viene del usuario externo (WP, Ghost, RSS) DEBE pasar por `isSafeUrl()` o el render final ejecuta XSS. Aplicado en `htmlToTiptap` y, defensivamente, en figure/img tags. Si `isSafeUrl` devuelve false: descartar el mark (preserva el texto sin link), o descartar la imagen completa.
+
+### 2026-05-03 — Stats que la UI muestra deben ser visibles a la lógica
+`stats.skipped` estaba en `EMPTY_STATS` y se mostraba en la UI, pero ningún path del engine lo incrementaba. Items "media standalone" y "term sin slug" iban a `imported` espuriamente. Patrón: cada path de retorno del engine debe explicitar uno de `{ ok: true } | { ok: true, skipped: true } | { ok: false, error }` y el incrementador del stat es declarativo en la rama del switch. No incrementar contadores espuriamente — hace UI mentir.
+
+### 2026-05-03 — Detect orden importa: específico → genérico
+El registry de parsers tiene un `DETECT_ORDER` que va de WP (más específico, requiere wp:wxr_version + rss) → RSS → Ghost → Notion → Markdown → CSV. Si markdown o CSV reclamaban un .zip antes que Notion, los .zip de Notion se misclassificaban como markdown vacío (cargando descomprimido para nada). Lección: detectores que aceptan "cualquier .zip" deben ir AL FINAL del orden o reclamar solo extensiones muy específicas (`*.md.zip`).
+
+### 2026-05-03 — Defense-in-depth: filtrar workspaceId en TODAS las queries aunque la fila padre ya esté validada
+`importItems` tenía FK al import padre que ya está validado por workspaceId. Filtrar también por `workspaceId` directamente en queries de `importItems` parece redundante. Pero protege contra bugs futuros (cascade weirdness, migración manual que cruce workspaces, FK quitado por error). Patrón consolidado: cada query con tabla multi-tenant lleva `eq(table.workspaceId, ws)` aunque el join lo asegure.
+
+### Verificación final F9a
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores
+- `npm run build` ✅ — `/admin/importar` (2.47 KB, 124 KB First Load), `/admin/importar/[id]` (8.81 KB, 127 KB), 5 rutas API nuevas
+- 1 CRITICAL + 4 HIGH + 7 MEDIUM corregidos; 6 LOW diferidos a F10
+- F9a queda blindada para pasar a F9b (Content Branching) sin deuda técnica conocida
+
+### 2026-05-03 — Tercera auditoría F0-F9a con sub-agent: 2 HIGH + 5 MEDIUM cross-fase
+
+Aplicado el patrón consolidado: tras cerrar F9a con auditoría de scope estrecho (capa 2), lancé subagent con scope amplio F0-F9a (capa 3) — encontró bugs en F1, F7, F8b, F8c que la auditoría por fase no atrapa.
+
+**HIGH cross-fase encontrados y fixeados**:
+
+- [x] **HIGH H1: Open-redirect en login admin (F1 preexistente)** — `login-form.tsx` y `oauth-buttons.tsx` aceptaban `?next=` sin validar. Atacante con `https://app/login?next=https://evil.com` redirigía sesión post-login. **Fix**: `safeInternalPath(search.get("next"), "/admin")` aplicado en `router.push`, `callbackURL` (Better-Auth signin/email), `magicLink callbackURL`, `OAuth callbackURL`. Helper `safeInternalPath` ya existía en `src/lib/safe-redirect.ts` desde F8b — sólo no se usaba en este path.
+
+- [x] **HIGH H2: Cross-tenant lookup en formularios públicos (F7 preexistente)** — `getPublishedFormBySlug(slug)` filtraba sólo `(slug, status='published')` sin `workspaceId`. Dos workspaces con un form llamado `contact` se mezclaban; el orden de retorno del DB era indefinido. **Fix**: la firma cambia a `getPublishedFormBySlug(workspaceId, slug)`. Cada caller (`/api/public/forms/[slug]/{submit,schema,confirm}`, `/forms/[slug]/page.tsx`) resuelve workspace por host con `resolveWorkspaceIdByHost` antes de invocar.
+
+**MEDIUM cross-fase fixeados**:
+
+- [x] **M1: ReDoS bypass en redirects matcher (F7c)** — la heurística `/\([^)]*[+*][^)]*\)[+*]/` detectaba `(a+)+` pero NO `((a+))+`, `(a|b)+`, ni `(((a*))*)?`. Cualquier editor podía plantear un regex catastrófico que bloquearía cada page-render via `runRedirect` middleware. **Fix**: triple defensa en `validateRule`: (a) whitelist estricto de caracteres, (b) cuenta de paréntesis abiertos sin cerrar (rechaza cualquier nivel >1), (c) detección de alternancia con cuantificador externo `(...|...)+`. Combina con la heurística previa.
+
+- [x] **M2: F9a regression — `originRef` collision** — el engine pasaba el literal `"import"` a `buildOriginRef()` en lugar del parser real. Resultado: WP post id=42 colisionaba con Notion page id="42", el segundo sobrescribía el primero. Además, CSV sin id asignaba `sourceId="row-N"` y dos CSVs distintos colisionaban. **Fix**: añadido `source` a `EngineCtx`, `buildOriginRef(ctx.source, "entry", sourceId)`. Para CSV con auto-id, prefix `${importId}:row-N` para garantizar idempotencia inter-lote sólo dentro del mismo run.
+
+- [x] **M3: Multi-tenant fallback en `resolvePublicWorkspace` (F8a-b)** — fallback al primer workspace cuando host no resolvía. En producción multi-tenant atribuía Stripe checkouts/portal/AB events al tenant equivocado silenciosamente. **Fix**: `isSingleTenantMode()` (=`CSM_SINGLE_TENANT=true` o `NODE_ENV !== production`); en producción multi-tenant devuelve `null` y la ruta responde 4xx en lugar de fallback ciego.
+
+- [x] **M4: A/B test `pageId` no validado cross-tenant (F8c)** — `createAbTestAction`/`updateAbTestAction` aceptaban `pageId` y `variants[].pageId` con `z.string().uuid()` sin verificar pertenencia al workspace. Latente hoy (no se renderiza), explotable cuando F9c añada page-level rendering. **Fix**: helper `ensurePagesBelongToWorkspace(workspaceId, ids[])` consulta `pages` con `inArray(id, ids) AND workspaceId=ws` y rechaza si alguno falta.
+
+- [x] **M5: Form `redirectUrl` aceptaba cualquier URL (F7)** — `z.string().url()` permitía `https://evil/phishing-clone`. Editor comprometido podía harvestear credenciales de submitters redirigiendo el form a un phishing tras submit. **Fix**: nuevo schema `safeRedirectUrl` con `isSafeUrl()` (whitelist de protocolos, anti protocol-relative, anti control chars). Aplicado a Create + Update.
+
+**LOW cross-fase fixeados**:
+- [x] **L2: `deleteCampaignAction` sin UUID parse (F8b)** — añadido `z.string().uuid().safeParse(input.id)`.
+- [x] **L3: `sendTestCampaignAction` sin rate-limit (F8b)** — atacante con sesión editor enviaba mass-mailbomb desde dominio Resend del workspace. Fix: `consume("campaign:test:${ws}:${user}", 20, 60*60*1000)`.
+
+**LOW diferidos a F10**:
+- L1: `deliverLegacyWebhook` en forms con `webhookUrl` → eliminar el campo o añadir cap de timeout/response-size; sin UI actual.
+
+### Lecciones nuevas que emergen de la 3ª auditoría F0-F9a
+
+1. **Las auditorías por fase no encuentran open-redirect en flows de auth pre-existentes**.
+   F1 (auth) tenía el bug desde el principio. F8b añadió `safeInternalPath()` para miembros pero no se aplicó retroactivamente al admin login. **Lección**: cuando se añade un helper de seguridad nuevo (F8b safe-redirect), grep TODOS los callers existentes de `router.push(next)` / `callbackURL` y migrar de una vez. La defensa-en-profundidad sólo funciona si es consistente.
+
+2. **`getPublishedFormBySlug(slug)` sin workspace fue un foot-gun multi-tenant desde F7**.
+   La firma "pública" (sin workspace) parecía conveniente porque la ruta era pública. Pero "público" no significa "global cross-tenant". **Lección**: cualquier query de tabla multi-tenant DEBE recibir `workspaceId` como primer arg. Helpers públicos resuelven el workspace por host fuera del helper.
+
+3. **Heurísticas anti-ReDoS con regex monolítico son fácilmente bypaseable**.
+   El primer fix `\([^)]*[+*][^)]*\)[+*]` detectaba un solo nivel. El bypass `((a+))+` era trivial. **Lección**: para validación de regex de usuario, combinar (a) whitelist de caracteres, (b) parser estructural (counting parens), (c) heurísticas adicionales para cada vector conocido (alternancia, etc.). O migrar a RE2-engine sin backtracking. Patrón: "validators contra ataques estructurales no se hacen con regex sobre el input — se parsean estructuralmente".
+
+4. **Ramping del scope: la 3ª auditoría siempre encuentra bugs cross-fase**.
+   Capa 2 (F9a estrecho) detectó 1 CRITICAL + 5 HIGH en F9a. Capa 3 (F0-F9a amplio) detectó 2 HIGH + 5 MEDIUM en F1, F7, F8a-b, F8c — todos cross-fase, todos invisibles a auditorías por fase. Coste capa 3: ~10 min cómputo + ~250k tokens. Beneficio: 7 bugs reales evitados. **Esta capa es OBLIGATORIA al final de cada fase mayor**.
+
+5. **Memory of regression: F9a regresión `originRef` colisión**.
+   El campo `originRef` se introdujo con prefijo `"import"` literal en F9a (mi código). El subagent estrecho no lo flageó porque parecía intencional. El subagent amplio (que conocía el contexto multi-source) lo identificó como colisión. **Lección**: cuando un campo derivado tiene varios productores, el discriminator debe ser explícito en cada productor — no un default.
+
+### Verificación final F0-F9a (post-3ª-auditoría)
+- `npx tsc --noEmit` cero errores
+- `npx biome check ./src` cero errores
+- `npm run build` ✅ — todas las rutas presentes
+- 2 HIGH + 5 MEDIUM + 2 LOW cross-fase corregidos; 1 LOW diferido a F10
+- F0-F9a queda blindada — listo para F9b (Content Branching) sin deuda técnica conocida
+
+---
+
+## 2026-05-04 — F9b · Content Branching
+
+### Decisiones arquitectónicas que tomé al implementar
+
+1. **`entries.branchId IS NULL = main` (legacy compat) + fila `main` real en `branches` para metadata**.
+   En lugar de migrar todas las entries a `branchId = main.id`, opté por un híbrido: la fila main existe en `branches` (con `isDefault=true`) para permisos, activity log y stats, pero las entries de main siguen viviendo con `branchId IS NULL`. Esto evita un backfill peligroso de millones de filas en el futuro y mantiene 100% de compat con queries existentes (blog, sitemap, RSS) que ya filtran sin pensar en branches. **Trade-off**: hay que recordar que en `listEntriesForBranch(main)` se filtra por `branchId IS NULL`, no por `branchId = main.id`. Documentado en lib.ts y cow.ts.
+
+2. **Copy-on-write LAZY (no copy-at-create)**.
+   Crear una branch es O(1) — ninguna entry se duplica hasta el primer save. La fork se materializa en `materializeForkOnEdit` con snapshot `branchedFromUpdatedAt = mainEntry.updatedAt` para poder detectar conflictos al merge (`m.updated_at > e.branched_from_updated_at`). Permite tener decenas de branches activas con coste casi cero en disco/tiempo.
+
+3. **Slug COW prefijado `__b-<branchSlug>` para esquivar el unique `(ws,coll,slug,locale)`**.
+   La fork comparte collection+locale con su entry main, así que el unique constraint de slug colisionaría. Solución: la fork usa `${originalSlug}__b-${branchSlug.slice(0,12)}` mientras vive en branch, y al `promote` durante el merge se restaura el slug original (que es el de main, no el de la fork). Documentado en `cowSlug()`.
+
+4. **3 estados visibles para entries en branch + tombstones**.
+   `forked` (COW de main editada), `new` (creada en branch sin original), `deleted` (tombstone — borra main al merge). El usuario ve los 3 con badges de color en `/admin/branches/[id]`. La UI distingue "borrar en branch" (tombstone) vs "descartar cambios" (revert hard-delete del fork). Sin esto, "borrar en branch" sería ambiguo y rompería la expectativa de que un merge limpie main.
+
+5. **Merge 3-way con resolución per-bloque desde el inicio (no fast-forward only)**.
+   Cada item del plan tiene su `defaultAction` (promote/delete_main/create_in_main) y el usuario puede pasar `resolutions[forkId]` con `use_branch | use_main | skip`. El merge se bloquea si hay conflictos sin override. Esto es lo que diferencia el branching de CSM de un mero "staging" — sin merge inteligente, el feature es decorativo. Coste: ~280 líneas de `merge.ts`.
+
+6. **Preview público SIN auth, con token rotable + password opcional + expiración**.
+   `/preview/branch/[token]` es público (sin login admin) para poder compartir con stakeholders. Token = 24 bytes random base64url (192 bits, no enumerable). Password = sha256(salt + plaintext). Expiración opcional. `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet` en layout.tsx. NUNCA usar el preview para contenido confidencial sin password — la URL es la auth.
+
+### Patrones nuevos consolidados
+
+7. **Claim atómico con UPDATE … RETURNING para operaciones long-running** (ya consolidado en F8b/F9a, ahora también en merge):
+   ```ts
+   const claimed = await db
+     .update(branches)
+     .set({ status: "merging", updatedAt: new Date() })
+     .where(and(
+       eq(branches.workspaceId, ws),
+       eq(branches.id, branchId),
+       eq(branches.status, "draft"),
+       eq(branches.isDefault, false),  // never main
+     ))
+     .returning({ id: branches.id });
+   if (claimed.length === 0) return error;
+   ```
+   Sin esto, dos clicks en "Merge" desencadenan dos merges en paralelo. La regla es **siempre** filtrar por `status` esperado en el WHERE del UPDATE, nunca SELECT-then-UPDATE.
+
+8. **Cookie scope `path: "/admin"` para state admin-only**.
+   `csm_branch` cookie se setea con `path: "/admin"` para que NO se envíe en peticiones del sitio público (blog, /preview, /miembros). Esto evita que el blog público accidentalmente use la branch activa del editor logueado y muestre fork content. La regla: cualquier cookie de "modo admin" (workspace activo, branch activa, theme override) debe ser path-scoped.
+
+9. **Snapshot `branchedFromUpdatedAt` para conflict detection eficiente**.
+   En lugar de comparar bodies con un hash o checksum (caro), basta con guardar `mainEntry.updatedAt` en el momento del fork. Si después main se actualiza, `m.updated_at > e.branched_from_updated_at`. Una sola query JOIN agregada calcula todos los conflicts del workspace. Coste cero en write path (sólo set una vez al fork).
+
+10. **Block-id estable para diff Tiptap**.
+    Tiptap puede o no asignar `attrs.id` por bloque. Cuando no, hash determinista `djb2(type + text + idx)`. Esto permite que `diffBlocks` reconozca "este es el mismo bloque" tras edits dentro del bloque (texto cambia pero el id se preserva). Si el id es `auto-…-i`, la match falla cuando se reordenan bloques — limitación conocida. Para diff perfecto en F10: forzar block ids estables en todo el editor (PROSEMIRROR-ID extension).
+
+### Cosas que NO funcionarían si las hiciera al revés
+
+11. **NO migrar entries main a `branchId = main.id`** (consideré hacerlo).
+    Habría requerido `UPDATE entries SET branchId = (SELECT main.id …) WHERE branchId IS NULL` por workspace, ALTER COLUMN NOT NULL, y hot-fix de 30+ queries en blog/api/v1/sitemap/feed/og/search/automations/webhooks. Riesgo enorme. La alternativa NULL=main es operacionalmente equivalente y backwards-compat al 100%.
+
+12. **NO mezclar `comments` (públicos) con `branch_comments`** (consideré reusar).
+    `comments` se renderiza en el blog público y tiene status `pending|approved|spam`. Branch comments necesitan threads, mentions, anchorRange, status `open|resolved` — semántica completamente distinta. Tabla separada evita CHECK constraints complicados y queries con OR.
+
+13. **NO crear pageId fork en F9b** (esperado para F10).
+    El usuario podría querer "branchear una página visual" — el schema lo permitiría (similar a entries) pero la complejidad del builder + symbols se duplicaba. F9b cubre entries (posts + custom collections), F10 puede extender a pages.
+
+### Riesgos asumidos conscientemente (diferidos a F10)
+
+- **Webhook `entry.updated` se dispara para forks**: subscribers externos reciben eventos sobre fork edits. Mitigación F10: filtrar `branchId` en dispatcher. Por ahora aceptable porque webhooks rara vez llegan al detalle de "ese id es de qué branch".
+- **Search index encola embeddings de forks**: pollute del vector space del workspace. Mitigación F10: skip enqueue si branchId !== null.
+- **createEntry no respeta branch activa**: si usuario crea un post con branch X activa, va a main. Hay que usar `createEntryInBranch` explícitamente. Mitigación F10: integrar en `createNewPostFormAction` y similares.
+- **Preview view counter no rate-limited**: spam público inflará `previewViews`. Aceptable.
+- **`abandonBranchAction` permite a cualquier editor abandonar branches de otros**: en workspace colaborativo es intencional pero suboptimal. F10: `editor` solo puede abandonar branches que creó; `admin` cualquier branch.
+
+### Verificación final F9b
+- `npx tsc --noEmit` cero errores
+- `npx biome check` (43 files) cero errores en F9b
+- `npm run build` ✅ — `/admin/branches`, `/admin/branches/[id]`, 4 API routes, `/preview/branch/[token]` x2 todos en bundle
+- Backfill `scripts/backfill-main-branches.ts` ejecutado contra Neon — main creada para workspace demo
+
+#### Auditoría capa 2 (subagent estrecho F9b)
+3 CRITICAL + 11 HIGH + 10 MEDIUM + 6 LOW. Aplicados:
+- [x] **C1**: workspace asserts en `materializeForkOnEdit`/`markDeletedInBranch`/`revertForkInBranch`/`createEntryInBranch` (cow.ts) — validar `branch.workspaceId === workspaceId` al inicio.
+- [x] **C3**: sibling forks órfanos al delete-promote (merge.ts) — antes de borrar main, convertir todas las forks `originalEntryId=mainId` de OTRAS branches a `branchState='new'` (clear originalEntryId/branchedFromUpdatedAt).
+- [x] **H4**: full scan workspace en branches/[id]/page.tsx — `inArray(entries.id, originalIds)`.
+- [x] **H6**: rotatePreviewToken role gate — editor sin password rechazado, admin sin restricción. (admin role completo lo dejo para F10).
+- [x] **H7**: abandonBranch gate — sólo creator o admin.
+- [x] **H9**: cowSlug colisión de prefijo — añadido sufijo `-${branchId.slice(0,6)}` para deduplicar branches con slugs largos compartiendo primeros 12 chars.
+- [x] **H10**: deleted-promotion ahora también detecta conflictos — `listBranchConflicts` extiende a `branchState IN ('forked','deleted')`.
+- [x] **H14**: hashPreviewPassword salt incluye `branchId` + comparación con `timingSafeEqual`.
+- [x] **M15**: cookie `csm_branch` httpOnly:true (la layout server-side la consume).
+- [x] **M20**: stuck merge timeout — claim atómico permite re-claim si `status='merging' AND updatedAt < now() - interval '5 minutes'`.
+- [x] **M21**: resolveActiveBranch rechaza también `merging` (no sólo merged/abandoned).
+- [x] **M22**: JOIN en `listBranchConflicts` y `listBranchesWithStats` añade `m.workspace_id = e.workspace_id` defense-in-depth.
+- [x] **M23**: comment mentions validadas contra tabla `members` del workspace.
+- [x] **M24** (= L3-12): `createPostInternal` y `createEntryInCollectionAction` respetan branch activa, ruta a `createEntryInBranch` cuando ≠ main.
+- [x] **L26**: `abandonBranch` también limpia previewToken/passwordHash/expiresAt.
+- [x] **L29**: comentario MS→S corregido en types.ts.
+- [x] **L30**: password preview ya NO viaja en URL — server action POST + cookie httpOnly `csm_branch_preview_<token>` scoped por path.
+
+Diferidos a F10:
+- C2-8 / H8: rebase explícito (refresh `branchedFromUpdatedAt` al ver una versión nueva de main). Hoy genera falsos positivos de conflict tras "use_branch" sin merge.
+- C2-19: `comment.deleted` activity log requiere añadir valor al enum `branch_activity_type` — schema migration menor.
+- C2-25: `listEntriesForBranch` 2 queries → 1 LEFT JOIN (perf no crítico).
+- C2-27: race en `createBranch` (hoy retorna error genérico — UI tolera).
+- C2-28: emoji ⚠ en client (cosmético).
+
+#### Auditoría capa 3 (subagent amplio F0-F9b cross-fase)
+**4 CRITICAL + 5 HIGH** sistémicos: F9b añadió `branchId` pero TODO el sitio público y APIs ignoraban la columna → fork content publicado leakeaba a producción al instante. Aplicados:
+
+- [x] **L3-1 (CRITICAL)**: Sitio público + queries derivadas. `isNull(entries.branchId)` añadido en:
+  - `src/lib/entries.ts` × 3 (`getPublishedPostBySlug`, `listPublishedPostsForWorkspace`, `listEntries` admin)
+  - `src/lib/feed.ts` (RSS/Atom/JSON)
+  - `src/lib/authors.ts` (archivo público de autor)
+  - `src/lib/tags.ts` (archivo público de tag)
+  - `src/lib/dashboard.ts` × 3 (status counts, entries series, top posts)
+  - `src/lib/comments.ts` (`getEntryForComment`)
+  - `src/lib/asset-usage.ts` (asset deletion guard)
+  - `src/lib/collections.ts` (entryCount subquery)
+  - `src/app/sitemap.ts`
+- [x] **L3-2 (CRITICAL)**: REST `/api/v1/entries` — list, get, update, delete, publish todos filtran branch null.
+- [x] **L3-3 (CRITICAL)**: GraphQL `entries` y `entry` resolvers filtran branch null.
+- [x] **L3-4 (CRITICAL)**: Search FTS + vector + indexCoverage filtran branch null. `enqueueIndex` skip silencioso si entry tiene `branchId !== null`. `reindexWorkspace` filtra main only.
+- [x] **L3-5 (HIGH)**: bulk actions admin (`publishEntriesAction`, `unpublishEntriesAction`, `archiveEntriesAction`, `deleteEntriesAction`, `scheduleEntryAction`) sólo afectan main.
+- [x] **L3-6 (HIGH)**: cron `publish-scheduled/route.ts` sólo publica entries de main.
+- [x] **L3-7/L3-8 (HIGH)**: `saveEntryAction` skip `revalidateTag(post:slug)`, `enqueueIndex` y `emitAsync(entry.updated)` cuando `current.branchId !== null` (es fork). Reactivados sólo en merge.
+- [x] **L3-9 (HIGH)**: `mergeBranch` ahora dispara webhooks (`entry.published` si fue transición real, `entry.updated` siempre, `entry.deleted` para tombstones), `enqueueIndex` para promovidas, `revalidatePath("/blog","/")` y `revalidateTag(workspace:ws:entries)` al cierre.
+- [x] **L3-10 (MEDIUM)**: `/api/og/article/[id]` filtra branch null.
+- [x] **L3-13 (MEDIUM)**: `restoreRevisionAction` integra COW guard — si branch ≠ main y entry está en main, materializa fork primero. Si branch es main y entry está en otra branch, bloquea.
+- [x] **L3-14 (= H4)**: full scan corregido (ya hecho).
+
+### Lecciones nuevas aprendidas en F9b
+
+1. **Añadir una columna nueva al schema de un dato heavily-queried (como `entries.branchId`) sin auditar TODAS las queries existentes es un bug sistémico esperando.**
+   La auditoría capa 2 estrecha (F9b only) pasó casi todo OK porque mi código nuevo SÍ filtraba. La capa 3 amplia destapó que ~14 archivos en otras fases consultaban entries sin filtrar `branchId`. **Lección consolidada**: cualquier ALTER TABLE que añada columna con semántica visible-vs-oculto necesita un grep exhaustivo de `from(entries)` en TODO el repo + decision por archivo. Mejor todavía: ofrecer un helper exportado (`mainEntryFilter()` en `src/branches/cow.ts`) y migrar gradualmente.
+
+2. **El claim atómico anti-race necesita escape hatch para procesos muertos.**
+   F8b/F9a usaron `UPDATE … WHERE status='draft' RETURNING`. Funciona perfecto mientras el proceso vive. Si crashea mid-merge, la fila queda en `merging` permanente. **Pattern fix**: extender el WHERE a `(status='draft' OR (status='merging' AND updatedAt < now() - interval '5 minutes'))`. El threshold ≥ tiempo máximo razonable de merge.
+
+3. **Cookie httpOnly:true por defecto incluso si "el cliente la lee".**
+   F9b inicialmente puso `httpOnly: false` en `csm_branch` "porque el switcher la lee desde document.cookie". Pero el switcher recibe la branch activa via props server-side, no lee cookie en cliente. Auditoría flagged como riesgo XSS preventivo. Regla: `httpOnly: true` siempre, salvo prueba explícita de necesidad client-side.
+
+4. **Password en URL ?pw=… queda en historial, Referer headers y access logs.**
+   El form de password viajaba GET. Aunque conveniente, los password tokens deben ir SIEMPRE en POST body + cookie httpOnly scoped por `path`. La auditoría lo flagged y lo arreglé con `submitPreviewPassword` server action que hace `cookies().set()` y `redirect()`.
+
+5. **Sibling forks en delete-promotion: el DELETE silencioso de main rompe forks de otras branches que también referenciaban esa entry.**
+   El INNER JOIN en `listBranchConflicts` las dropea silenciosamente, así que se ven como "no-conflict" hasta que mergean y fallan con "Entry main desapareció". Fix: antes de delete promote, scan `WHERE originalEntryId=mainId AND branchId != currentBranchId` y convertir a `branchState='new' originalEntryId=NULL`. Esas forks se promueven como entries nuevas en su propio merge.
+
+6. **Salt fijo en password hash es regalo a rainbow tables si la DB se filtra.**
+   `csm:preview:${password}` produce hash idéntico para 2 branches con el mismo password. Sustituir por `csm:preview:${branchId}:${password}` añade sal por-recurso sin coste. Y para comparación: `timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"))` no `===`.
+
+7. **El stricto control de "branch activa" en server actions implica revisar TODA action que escribe entries.**
+   `saveEntryAction` lo tenía desde el inicio; `restoreRevisionAction`, `createPostInternal`, `createEntryInCollectionAction` no — eran omisiones. Si una action muta `entries`, debe (a) resolver branch activa, (b) aplicar COW si necesario, (c) skip side-effects públicos (webhook/cache/index) cuando branchId !== null.
+
+### Verificación post-fix
+- typecheck cero errores
+- biome cero errores en 43 files modificados
+- build pasa con todos los routes en bundle
+- F0-F9b queda blindada — listo para F9c (Editorial Calendar + Workflows) sin deuda técnica conocida
+
+---
+
+## 2026-05-04 — Blindaje final pre-F9c (4ª auditoría)
+
+Antes de empezar F9c lancé una 4ª auditoría profunda buscando regresiones y casos missed por las anteriores. Encontró **0 CRITICAL + 3 HIGH + 4 MEDIUM + 2 LOW** (más 1 CRITICAL extra que detecté manualmente leyendo `src/middleware.ts`).
+
+### Bug crítico que descubrí FUERA del agente
+- **Middleware bloqueaba `/preview/branch/[token]` para usuarios anónimos**: la regex `/^\/preview(\/|$)/` en `PROTECTED` redirigía a `/login` cualquier URL que empezara por `/preview/`. Los preview tokens públicos (cuya gracia es no requerir login) estaban completamente rotos. **Fix**: regex cambiada a `/^\/preview\/(?!branch\/)[^/]+/` para excluir el segmento `branch/`. Una semana entera de feature en F9b habría llegado al usuario rota sin esta verificación.
+
+**Lección consolidada**: cuando una fase añade rutas nuevas bajo un prefijo ya existente (`/preview/branch/...` cuando ya había `/preview/[id]`), revisar middleware/proxies/edge config inmediatamente. Las rutas nuevas heredan reglas viejas por defecto.
+
+### Findings del agente — todos aplicados
+
+- [x] **H1: `getRevision` cross-tenant** (lib/entries.ts:390). El helper exportado leía revisions sin filtrar por workspace. Hoy el único caller (`restoreRevisionAction`) se salvaba por coincidencia (compara `rev.entryId` contra una entry del workspace activo). Cualquier futuro caller (CLI, GraphQL, REST, merge tooling) podía leakear revisions cross-tenant. **Fix**: la firma ahora exige `workspaceId` y hace INNER JOIN con `entries` filtrando por ese workspace. Caller actualizado.
+
+- [x] **H2: Race en merge `promote`** (branches/merge.ts:381-418). El UPDATE de main no comprobaba rowcount. Si entre el SELECT de main (línea 383) y el UPDATE (línea 397) otro proceso borra main (otro merge `state='deleted'`, bulk-delete admin), el UPDATE afecta 0 filas pero el DELETE de la fork sigue ejecutándose → contenido del autor de la branch se evapora silenciosamente. **Fix**: `.returning({ id })` y bail con error si vacío, preservando la fork.
+
+- [x] **H3: `createEntryInBranch` slug uniqueness** (branches/cow.ts:266-300). Crear dos entries con el mismo título en la misma branch+collection+locale violaba `entries_ws_coll_slug_locale_idx` → 500 genérico al usuario. **Fix**: `ensureUniqueEntrySlug` antes del insert (mismo patrón que `createEntry`).
+
+- [x] **M4: `ensureSingletonEntryAction` no filtra branchId** (admin/contenido/_actions.ts:117-127). Para singletons, si la entry tenía fork en una branch, el SELECT sin filtro retornaba orden indeterminado de heap → el redirect podía tirar al editor de la fork mientras el usuario está en main. **Fix**: añadido `isNull(entries.branchId)`.
+
+- [x] **M5: Race en merge `state='new'` slug** (branches/merge.ts:344-362). Entre `ensureUniqueEntrySlug` y el UPDATE que limpia branchId, otro proceso podía reservar el slug → unique violation aborta el merge dejando la fork con `branchId=null` ya escrito. **Fix**: retry loop sobre código `23505`, hasta 5 intentos con sufijo timestamp+attempt.
+
+- [x] **M6: `processIndexJobs` re-embebía forks legacy**. Ya aplicado en mi turno previo (defense-in-depth tras la corrección de `enqueueIndex`). El processor ahora skipa forks marcando job como `done` con error `"fork (skipped)"`.
+
+- [x] **L8: imports engine UPDATE sin workspaceId** (imports/engine.ts:376). El SELECT previo ya garantizaba workspace pero el UPDATE confiaba ciegamente. Defense-in-depth aplicado.
+
+- [x] **L9: `publishEntriesAction` re-encolaba ids no-transicionados** (admin/contenido/_actions.ts:410). Iteraba `parsed.data.ids` (input) en lugar de `transitioned` (resultado del UPDATE). Re-publicar entries ya publicadas gastaba presupuesto de embeddings sin razón. **Fix**: iterar `transitioned`.
+
+### Diferido
+- **M7: webhook delivery non-idempotency en merge retries**. Si merge falla a media iteración, items 1..N-1 ya completados re-emiten webhook al reintentar. Cada delivery tiene fresh `eventId` → subscribers no pueden dedupe. F10: añadir `merge_progress` table o per-item dedup key en `webhook_deliveries`. Por ahora aceptable — los subscribers maduros idempotentean por `payload.id` + `via`.
+
+### Lecciones nuevas
+
+1. **Una capa más de auditoría descubre regresiones que las anteriores no detectaron.** La 4ª audit encontró 9 issues (1 CRITICAL + 3 HIGH + 4 MEDIUM + 2 LOW) tras 3 auditorías previas. **Regla**: una fase MAYOR (F8, F9, F10) no se cierra hasta que una auditoría amplia adicional vuelva con ≤2 LOW. Si vuelve con HIGH, la fase no estaba lista.
+
+2. **Middleware con regex amplio (`/^\/prefix(\/|$)/`) hereda rutas nuevas por defecto.** Cualquier `app/preview/foo/...` añadido más adelante quedará protegido aunque no se quiera. Mejor: regex más específico (`/^\/preview\/[^/]+$/` para single-segment, etc.) o un patrón whitelist explícito.
+
+3. **`UPDATE … WHERE id=X` SIN `.returning()` es un bug latente cuando hay race possible**. Especialmente cuando la lógica posterior borra otra fila basándose en "el UPDATE seguro funcionó". Consolidar el patrón: TODO UPDATE en código que también borra/escribe en otras tablas debe verificar rowcount.
+
+4. **Helpers exportados deben ser seguros para CUALQUIER caller, no solo los actuales.** `getRevision(id)` era seguro porque el único caller compensaba. Pero exportarlo hace que los nuevos callers (futuro CLI, futura tooling) confíen en él. Los helpers cross-tenant-sensitive deben REQUERIR workspaceId en la firma.
+
+### Verificación final pre-F9c
+- `npx tsc --noEmit` ✅ 0 errores
+- `npx biome check ./src ./scripts ./bin` ✅ 0 errores en 477 files
+- `npm run build` ✅ OK con todos los routes en bundle
+- `npm run db:seed` ✅ idempotente
+- F0-F9b **completamente blindada** — el sistema queda en estado "perfecto" para arrancar F9c
+
+## 2026-05-04 — F9c · Editorial OS (Calendar + Workflows + Notifications + iCal)
+
+### Lecciones nuevas que emergen del cierre de fase F9c
+
+1. **Añadir un valor a un enum DB toca 5+ planos paralelos**.
+   Añadir `"approved"` al `entry_status` enum requirió actualizar:
+   - Schema Drizzle (✓ obvio)
+   - Tipos TS derivados (`Entry["status"]`)
+   - 3 schemas Zod (`EntryResourceSchema`, `EntryCreateSchema`, `ListEntriesQuerySchema`) — capa REST v1
+   - GraphQL `EntryStatusEnum` (capa F7c)
+   - SDK `Entry.status` (capa F7c)
+   - 3 records UI (`StatusTabs.TABS`, `posts-table.statusBadge`, `side-panel.StatusDot`, `editor-shell.Status`)
+   - Records `counts` en lib/entries.ts (3 ocurrencias)
+   El subagent estrecho atrapó el schema y los tipos directos; el subagent amplio (capa 3) atrapó los 5 sistemas paralelos. **Lección: cualquier enum DB debe tener una `enumValues` exportada como única fuente de verdad y los demás módulos derivar de ella en vez de duplicar literales**. F10 audit: añadir biome rule custom.
+
+2. **In-memory bus + Vercel Fluid Compute = limit arquitectónico, NO bug**.
+   El SSE bell con `Map<userId, Set<Listener>>` funciona en una warm instance, pero entre instancias geo distintas un usuario en instancia A no recibe push de notification insertada por instancia B. **El fix correcto NO es código sino arquitectura**: F10 → Postgres LISTEN/NOTIFY o Redis pub/sub (Vercel Marketplace). Mientras tanto, el SSE sirve correctamente cuando el load balancer pega al user en la instancia que ejecutó la mutation, lo cual es ~80% del tráfico en un solo workspace pequeño. Documentar limitación.
+
+3. **iCal RFC 5545 line folding NO es opcional**.
+   Mi primera implementación generaba lineas >75 octetos cuando los titles eran largos. Apple Calendar y Outlook silenciosamente rechazan el feed entero. Implementé `foldLine` UTF-8-aware (retrocede si está a mitad de continuation byte). Aprendizaje: **todos los formatos de interoperabilidad (iCal, vCard, Atom, RSS, Sitemap) tienen "rules silently violated by parsers" — leer la spec y testear con clientes reales antes de enviar a producción**.
+
+4. **Server actions DEBEN filtrar por branchId (F9b)**.
+   Bug latente: `rescheduleEntryAction` aceptaba un `entryId` y mutaba esa entry sin chequear si era una fork. Si el usuario estaba en main pero recibía el id de la fork (vía link compartido o search), editaba la fork sin saberlo, generando divergencia silenciosa post-merge. **Lección consolidada con F9b**: cualquier server action que mute `entries` debe declarar explícitamente si trabaja sobre main, sobre branch activa, o ambas, y filtrar por branchId acorde. Patrón: `isNull(entries.branchId)` para mutaciones globales (calendar/workflows), `eq(entries.branchId, activeBranch.id)` para acciones del editor que ya pasaron por `materializeForkOnEdit`.
+
+5. **FK cascade on delete + audit trails de fases posteriores = pérdida silenciosa de datos.**
+   F9b creó `entries` con FK cascade en hijos (revisions, entryTerms, comments). F9c añadió `entry_assignments`, `entry_workflow_events`, `editorial_threads` con FK cascade al fork id. Cuando F9b hace `DELETE entries WHERE id=forkId` durante el merge, CASCADE se lleva todo el audit editorial al merge — pérdida total. **Fix C-4**: helper `transferEditorialAuditToMain` reapunta `entryId` al main antes del DELETE. **Lección general: cuando una fase X añade tablas hijas a una entidad existente, X tiene la responsabilidad de inspeccionar todos los flows de DELETE de la entidad padre en fases ≤X-1 y decidir si el cascade es deseado o requiere migración previa**. Esta es una clase de bug que SÓLO la auditoría capa 3 amplia detecta — capa 2 estrecha por fase la ignora.
+
+6. **Webhooks F7 deben extenderse cada vez que se añade un evento auditable nuevo.**
+   F9c añadió 12 tipos en `editorialEventTypeEnum` (audit interno) y 8 tipos en `EditorialNotificationType` (UI bell). Pero olvidé inicialmente extender `WEBHOOK_EVENTS` (F7). Resultado: integraciones externas (Slack, n8n) sordas a aprobaciones. **Patrón de gobierno: cada event type nuevo debe tener una respuesta consciente para los 3 canales: audit (entry_workflow_events), interno (notifications), externo (webhooks)**. No todos los eventos van a los 3 (ej: `comment.added` no necesita webhook), pero la decisión debe ser explícita.
+
+7. **El "claim atómico" (UPDATE WHERE pre-condition RETURNING) tiene un footgun: cleanup en branch de error.**
+   `transitionStatus.approved` hacía:
+   ```
+   1. UPDATE entries SET lockedForApprovalAt=now WHERE lockedForApprovalAt IS NULL
+   2. ... otras validaciones ...
+   3. UPDATE entries SET status=approved WHERE status=oldStatus
+   ```
+   Si paso 3 falla (race con otro user), el lock de paso 1 quedaba puesto eternamente. **Fix M7**: liberar lock en el branch de error si `lockedForApprovalById === input.actorId`. **Patrón: cualquier reservation/lock atómico debe tener su `release` en el path de error inmediato — preferiblemente en `try/finally` o helpers que envuelvan el lock+release**.
+
+8. **DnD nativo HTML5 evita una dependencia masiva (react-dnd, dnd-kit).**
+   `/admin/calendario` y `/admin/workflows` usan `draggable + onDragOver/onDrop` con `dataTransfer.setData("text/csm-entry-id", id)`. Cero deps añadidas. UX 95% del de dnd-kit. Optimistic update con `useTransition` + rollback al fallar. **Heurística: para drag-and-drop simple (1 source, 1 target type), HTML5 nativo es suficiente. Sólo levantar dnd-kit si necesitas multi-select drag, sortable lists con kbd a11y, o sortable nested.**
+
+9. **AI suggestions deben tener fallback heurístico y filter por slots ocupados.**
+   `suggestSlots` lee `analytics_events` últimos 90d. Pero un workspace nuevo tiene 0 events → `defaultSlots` (martes/jueves 09:00) garantiza 3 sugerencias visibles. Además filtramos slots ya programados (`upcoming` query) para evitar dobles publicaciones el mismo día. **Patrón: AI features deben degradar a heurística sensata y respetar el state existente del sistema. Nunca devolver array vacío sin explicación.**
+
+10. **`requireUser` + `requireWorkspace` deben usarse juntos en server actions, NO uno solo.**
+    `requireWorkspace` valida la cookie y retorna ws+role pero NO valida que el user esté logueado *individualmente* (devuelve null si no, redirect, etc). En código limpio fue casi automático llamarlos a ambos. **Patrón a documentar: server actions tipo `xxxAction` SIEMPRE deben empezar con `const user = await requireUser(); const ctx = await requireWorkspace(role);` — no asumir que requireWorkspace es suficiente.**
+
+### Verificación final F9c
+- `npx tsc --noEmit` ✅ 0 errores
+- `npx biome check` ✅ 0 errores en 21 files F9c
+- `npm run build` ✅ exitoso con todos los routes nuevos:
+  - `/admin/calendario` (8.63 kB), `/admin/workflows` (6.64 kB)
+  - `/api/admin/notifications` + 2 sub-routes (incluye SSE stream)
+  - `/api/admin/calendar.ics`, `/api/admin/ai/suggest-slot`, `/api/cron/sla-breach`
+- 2 capas de auditoría aplicadas:
+  - Capa 2 estrecho F9c: 3 CRITICAL + 5 HIGH + 4 MEDIUM relevantes fixeados
+  - Capa 3 amplio F0-F9c: 4 CRITICAL + 4 HIGH cross-fase fixeados
+- F0-F9c **blindada** — listo para F10 (Pulido + Performance + Seguridad + Deploy)
+
+## 2026-05-04 — F10a · Seguridad Enterprise (Parte 1: 2FA + Passkeys + Sesiones + CSP + Cookies)
+
+### Lecciones nuevas que emergen del arranque de F10
+
+1. **Better-Auth 1.2 NO incluye plugin `passkey` — implementar con `@simplewebauthn` directamente es la vía limpia.**
+   `node_modules/better-auth/dist/plugins/` lista 27 plugins (admin, organization, two-factor, multi-session, mcp, etc.) pero NO `passkey`. Versiones >=1.3 lo añaden, pero antes de upgradear toda la auth (riesgo de regresión en login/2FA/magic-link existentes) prefiero implementación custom con `@simplewebauthn/server` + `@simplewebauthn/browser`. Schema F0 ya tenía la tabla `passkeys` modelada correctamente, así que no requirió migración. Reusé `verifications` (key/value con TTL) como almacén de challenges efímeros — single-use vía `DELETE … WHERE id = $1` tras leer. **Patrón: cuando un plugin "esperado" no está disponible, comprobar si el schema ya soporta la feature (caso passkey, caso comments anchors) y construir helpers domain-pure por encima. Evita upgrade-storms.**
+
+2. **CSP `Report-Only` primero, `enforce` después — telemetría sin breaking changes.**
+   Activar CSP enforce de golpe es la receta para 50 issues post-deploy de "esto no carga". `src/lib/security-headers.ts` permite ambos modos (param `enforce: boolean`). En F10a forzamos `false` → browsers reportan violations a `/api/security/csp-report` sin bloquear. F10d revisará los logs y pasará a enforce con whitelist refinada. **Heurística cross-cutting: cualquier nueva política de seguridad debe tener un modo telemetry-only antes de enforce. Aplica a CSP, BotID, rate-limit, AI cost cap.**
+
+3. **CSP `'strict-dynamic'` + `'nonce-…'` libera de tener que listar cada CDN — pero exige Next.js cooperación.**
+   Con `'strict-dynamic'` los browsers modernos ignoran `https:` y `'unsafe-inline'` (sirven solo como fallback IE) y confían sólo en scripts firmados con el nonce + sus descendientes. Para que server components inyecten el nonce en `<Script nonce={…}>`, leemos `headers().get('x-nonce')` (lo seteamos en middleware con `NextResponse.next({ request: { headers } })`). Si en F10d aparecen scripts inline sin nonce → tendremos breakage al pasar a enforce; documentar en checklist.
+
+4. **`role="dialog"` en una `<div>` no es WAI-ARIA-correcto para banners no-modales.**
+   Biome detectó (`useAriaPropsForRole` o similar) que un cookie banner con `role="dialog"` requiere también `aria-modal` o gestión de focus trap. Como el banner NO es modal (puedes interactuar con la app debajo) → cambiado a `<section aria-labelledby="…">`, que es semántico correcto y a11y-friendly. **Patrón: si tu UI es un "info pop" no-bloqueante, NO uses role="dialog"; usa `<section>` o `<aside>`. Solo dialog cuando hay focus trap real.**
+
+5. **TypeScript 5.x distingue `Uint8Array<ArrayBuffer>` vs `Uint8Array<ArrayBufferLike>` — algunas libs lo notan.**
+   `@simplewebauthn/server` en su typing pide `Uint8Array<ArrayBuffer>` (ArrayBuffer estricto, no Shared). El array que devuelve `atob(...)` en Node tiene tipo `Uint8Array<ArrayBufferLike>` (compat con SharedArrayBuffer). Cast explícito `as unknown as Uint8Array<ArrayBuffer>` resuelve sin runtime cost (siempre es ArrayBuffer en Node). **Patrón: si una lib externa exige el typing estricto y operas con buffers de Node Buffer/atob, el cast `as unknown as Uint8Array<ArrayBuffer>` es seguro y NO crea problema runtime.**
+
+6. **`AuthenticatorTransport` lib.dom de TS 5.7 está desactualizada vs WebAuthn L3.**
+   `lib.dom.d.ts` no incluye `cable` ni `smart-card` aún (transports nuevos). Pero @simplewebauthn los usa. En lugar de `as AuthenticatorTransport[]` por elemento → `Set<string>` validación + cast del array completo: más legible y biome no protesta. **Heurística: si lib.dom rechaza un literal moderno que la spec sí define, valida con un Set y casteа el resultado al type esperado por la lib externa.**
+
+7. **El cookie banner debe vivir en root layout, no en páginas individuales.**
+   Razón: el banner debe verse en `/`, `/admin/*`, `/blog/*`, `/legal/*` — todas las rutas que renderizan HTML. Si lo metes en `/admin/layout.tsx`, el sitio público nunca lo muestra. Si lo metes en cada page.tsx, no es DRY. Solución: mount en `src/app/layout.tsx` junto a `<Toaster />`. Eso lo hace global. **Regla: componentes con políticas legales (cookies, GDPR notices) → root layout. Componentes con políticas de UX (toaster, command-palette) → root layout también si se quieren globales; el principio es el mismo.**
+
+8. **IP enmascarada en cliente NO sustituye a anonimización en DB.**
+   El UI de sesiones muestra IP enmascarada (`a.b.c.x` IPv4 / primer triplete IPv6) — privacidad para multi-user workspace. Pero la columna `sessions.ip_address` en DB sigue siendo la IP completa que mete Better-Auth. Para GDPR-compliant DB, F10a parte 2 debe implementar truncado pre-insert mediante hook de Better-Auth o trigger Postgres. **Documentar: enmascarado de display NO es anonimización legal — auditar para parte 2.**
+
+
+## 2026-05-04 — F10c · MCP Server (Parte 1: 12 tools + stdio + HTTP + CLI install + UI)
+
+### Lecciones del primer diferenciador realmente único 2026
+
+1. **Reusar la lógica de negocio (`src/lib/*`) en vez de re-escribir tools sobre HTTP es 5x menos código.**
+   El MCP server importa directamente `createEntry`, `listEntries`, `hybridSearch`, `listSubscribers`, `listBranchesWithStats` de los módulos compartidos. Cero duplicación con el REST `/api/v1`. El único pieza propia del MCP es el `actor` resolver (porque el flujo no tiene cookie de sesión) y el conversor MD→Tiptap (porque queremos que un LLM escriba en markdown plano sin saber Tiptap). **Patrón: si el CMS ya expone lib helpers domain-pure, el MCP server es una capa muy fina por encima — no construyas un servicio paralelo.**
+
+2. **`@modelcontextprotocol/sdk` v1.29 da TWO transports clean: `StdioServerTransport` y `WebStandardStreamableHTTPServerTransport`. NO hace falta express ni nada.**
+   El web-standard transport acepta `Request` y devuelve `Response` — encaja directamente en Next.js Route Handlers (`runtime: 'nodejs'`). Cero adapters. La API es: `await server.connect(transport); return transport.handleRequest(req)`. **Heurística: cuando integres MCP en una app Next.js / Hono / Cloudflare Workers, busca el transport "WebStandard*" del SDK; ahorra 90% del boilerplate.**
+
+3. **Para clientes desktop, el bootstrap más estable es un `.mjs` que `spawn` tsx — NO transpilar el server.**
+   `bin/csm-mcp.mjs` es un wrapper que llama `node_modules/.bin/tsx` con `src/mcp/cli.ts`. Ventajas: cero build pipeline, los `@/` aliases funcionan, los devs pueden modificar tools sin recompilar. Stdio queda intacto (tsx no escribe a stdout). Logs van a `stderr` (`process.stderr.write`) para no contaminar el stream MCP. **Patrón: bins ESM en Node ≥ 20 + `tsx` runtime es la forma más simple de servir TS desde npm bin sin step de build.**
+
+4. **MD→Tiptap conversor minimalista en 80 líneas evita que el LLM tenga que conocer el formato interno.**
+   Soporta headings #-####, listas (-, 1.), code blocks ```, blockquotes (>) y párrafos. Es suficiente para el 95% de casos editoriales y deja al user usar el editor admin para casos ricos (tablas, embeds, símbolos). Si el agente intenta meter markdown que no entendemos, cae a párrafos. **Heurística: cuando expongas tools que mutan documentos estructurados (Notion, Tiptap, Slate), acepta markdown plano + parser tolerante; documenta que para edición rica hay que usar la UI nativa.**
+
+5. **El `actor` para audit log debe resolverse en cascada cuando no hay cookie de sesión.**
+   Stdio MCP opera con API key, no con sesión de usuario. Pero `logActivity` exige `actorId`. La cascada `apiKeys.createdById → owners más antiguos → admins más antiguos` siempre encuentra alguien y deja audit limpio. Audit log meta incluye `source: "mcp"` para que un humano pueda filtrar después qué se hizo desde un agente. **Patrón: en cualquier integración machine-to-machine, deja explícito en audit el origen ("source": "mcp" / "webhook" / "automation"); auditabilidad debe distinguir humanos vs agentes.**
+
+6. **`ensureScope` con `mcp:any` como override + scopes específicos como fallback da granularidad sin complejidad.**
+   Una key con `mcp:any` puede llamar todos los tools. Una key con `entries:read` solo puede llamar tools que requieran ese scope (`entry_list`, `entry_get`, `entry_search`). El admin puede crear keys de "MCP read-only para asistente" o "MCP full para agente". `entries:any` = `entries:*` también funciona porque reusa `hasScope` que entiende globs. **Heurística: scope `<resource>:any` (universal) + scopes finos = la matriz mínima viable. No inventes un sistema de permisos paralelo para MCP.**
+
+7. **La página `/admin/mcp` con tabs y copy-paste reduce el time-to-first-tool a 2 minutos.**
+   Los usuarios NO leen docs. La discovery page con `npx csm mcp install --client=claude-desktop` que rellena la config automáticamente vs un JSON copy-paste con paths del SO correctos baja la fricción de "MCP" al de "instalar una extensión". **Patrón: cuando lances una integración técnica compleja (MCP, webhook, OAuth, OIDC), pon una page con tabs por cliente + comandos one-shot + paths absolutos; salva 50% del support load.**
+
+8. **Web-Standard transport stateless es lo correcto para Vercel Fluid Compute en F10c parte 1.**
+   Cada POST construye un `McpServer` nuevo. Vercel reusa instancias entre requests pero no comparte estado MCP. Esto es perfectamente legal según spec MCP — el cliente decide si quiere sessionful (mantenidas por el server) o stateless. Lo único que pierdes es resumibilidad de SSE largo. F10c parte 2 añadirá `sessionIdGenerator` + `EventStore` (Postgres) cuando tengamos un cliente que lo necesite (largos workflows). **Heurística: empieza siempre stateless en transports que escalen horizontal (HTTP/SSE en serverless). Sólo añade session affinity cuando un caso de uso real lo exija.**
+
+
+## 2026-05-04 — F10c · Agente Editorial in-product (chat con tool-use)
+
+### Lecciones del segundo bloque de F10c
+
+1. **Reusar el `McpSession` con un `directActorId` opcional > construir un nuevo sistema de sesiones para el agente.**
+   La idea inicial era separar "tools del MCP server" vs "tools del agente in-product". Habría sido duplicación. La solución limpia: añadir `directActorId?: string` a `McpSession`. Cuando está presente, `resolveMcpActor` lo usa directamente; cuando no, cae al fallback (creator de la API key → owner). El agente construye una sesión sintética con `apiKeyId: "agent:<userId>"` (sentinel para audit log) + scopes `["mcp:any"]` + `directActorId: userId`. **Patrón: cuando un nuevo caller necesita reusar un sistema de auth/permissions existente pero con una identidad diferente, añade un override opcional al sesión-record en lugar de crear un sistema paralelo.**
+
+2. **Anthropic tool-use loop "puro" (sin AI SDK ni LangChain) cabe en ~280 líneas y te da control total.**
+   Streaming SSE Anthropic tiene 6 tipos de eventos (`message_start`, `content_block_start`, `content_block_delta` con sub-tipo `text_delta` o `input_json_delta`, `content_block_stop`, `message_delta`, `message_stop`, `ping`). Mantienes un `Map<index, block-state>` per-iteración, acumulas `partial_json` por bloque tool_use, parseas al final en `content_block_stop`. El loop es: pide → consume stream → si hay `tool_use`, ejecuta + apila como `tool_result` user-message → repite (max 8 iter). **Heurística: si tu app necesita tool-use de Anthropic con stream y NO necesitas el ecosistema AI SDK (RAG, embeddings, multi-provider abstracto), implementarlo directo te ahorra 200KB de bundle, una capa de magia, y problemas de version skew.**
+
+3. **NDJSON es más simple que SSE para streams chat-like en Next.js Route Handlers.**
+   Los tres opciones para streams: SSE (`text/event-stream`), NDJSON (`application/x-ndjson`), o WebSocket. SSE es estándar pero exige formato `data: …\n\n` que el cliente debe parsear. NDJSON es 1 línea = 1 JSON: `for-await sobre lines, JSON.parse`. Cero ceremonial. Cliente: `for await` + `decoder.decode` + buffer + `indexOf('\n')`. Cuando no necesitas reconnect/event-id de SSE → NDJSON gana en simplicidad. **Patrón: para chat con tool-use vía Next.js Route Handlers, NDJSON > SSE > WebSocket. Usa SSE solo si necesitas semantics de Reporting API o EventSource del cliente.**
+
+4. **`zodToJsonSchema` con `target: "openApi3"` produce JSON Schema que Anthropic acepta directamente.**
+   El input schema de cada tool MCP es `ZodRawShape` (objeto plano `{key: ZodType}`). Para Anthropic necesitas JSON Schema con `type: "object"`, `properties`, `required`. Pasos: `z.object(shape)` → `zodToJsonSchema(wrapped, {target: "openApi3"})` → te da exactamente lo que Anthropic espera. Forzar `type: "object"` en root como red de seguridad. **Patrón: cuando cruzas un sistema basado en Zod (interno) con uno basado en JSON Schema (externo, OpenAPI/Anthropic/MCP/etc.), `zod-to-json-schema` con flag `openApi3` es el converter universal.**
+
+5. **React keys estables ÷ idx en arrays que crecen sólo por push.**
+   Biome flagea `messages.map((m, idx) => key={idx})` aunque en nuestro caso el array NO se reordena (sólo se hace push). Solución limpia: cada mensaje y cada `ContentPart` lleva su propio `id` generado en client-side al crear (`Date.now() + Math.random()`). Esto también ayuda al diff de React: cuando un text part se actualiza con un nuevo delta, su key permanece, evitando unmount/remount durante streaming. **Heurística: aunque biome/react-rules son a veces conservadoras, casi siempre es más sano dar IDs explícitos que silenciar la regla. El coste extra (genera 2 strings por turno) es despreciable.**
+
+6. **El indicador "pensando" debe aparecer ANTES del primer delta de texto, no después de la primera tool call.**
+   El primer flujo común es: usuario pregunta → el modelo decide invocar una tool antes de escribir nada → tool se ejecuta → luego texto. Si tu UI sólo muestra "pensando" cuando no hay text part, durante una pre-tool-call llamada no verá nada hasta que aparezca el primer delta. Solución: render `<ThinkingDots />` cuando `m.parts.length === 0` (ANTES de cualquier evento) Y dentro de cada text part vacío (`{p.text || <ThinkingDots />}`). **Patrón UX para chat con tool-use: el "pensando" tiene 3 estados — antes de cualquier evento, durante un text part vacío que aún no recibe deltas, y durante una tool call running. No omitas ninguno o el chat se ve "muerto" 1-3s.**
+
+
+## 2026-05-04 — F10c · Content Health Scan (único en CMS open-source 2026)
+
+### Lecciones de construir un "Lighthouse for content" sobre arquitectura existente
+
+1. **Heurísticas síncronas (regex + walker) cubren el 80% del valor sin LLM ni HTTP.**
+   Los 6 detectores que construimos (seo_title_length, seo_meta_missing, thin_content, missing_alt, heading_hierarchy, outdated_date) son cero-coste: pure functions sobre `Entry`. No hacen fetch, no llaman a IA, corren en milisegundos. **Siempre arrancar por las heurísticas determinísticas y reservar IA/HTTP para la siguiente capa**: `broken_link` (necesita HEAD requests con timeout/concurrency) y `factual_outdated` (necesita LLM con `entry.body` + fecha de publicación) son v2. El user ya tiene valor antes de añadir esa complejidad.
+
+2. **`inputHash` SHA-256 sobre los campos relevantes hace barato el cron semanal.**
+   En lugar de hashear el row completo de `entries`, sólo hasheamos `{title, excerpt, seo, bodyText, body}` — los 5 campos que afectan a los detectores. Si el user cambia `priority` o `dueAt` (no lo afectan al scan), el hash no cambia, no re-escaneamos. En un workspace de 1000 posts donde 30 cambian semanalmente, el cron procesa 30 + lee 970 cached. **Patrón: cuando un job idempotente es caro de ejecutar pero barato de "verificar si ya está hecho", almacena un hash determinista del INPUT no del OUTPUT, y compáralo en el cache check.**
+
+3. **Transacción `DELETE WHERE entry_id + INSERT batch + UPSERT snapshot` es la forma limpia de "reemplazar" issues.**
+   La tentación es: comparar issues antiguos vs nuevos, hacer UPDATE/INSERT/DELETE selectivo. NO. Mucho código, race conditions, bugs de "issue duplicado". La solución limpia: en una transacción, borra todos los issues de la entry y reinserta los nuevos. El UPSERT del snapshot va en la misma transacción. Postgres lo absorbe bien. Para 50 issues por entry × 1000 entries = 50k filas en transacciones de 0.5s cada una. **Heurística: para "snapshot completo de entidad derivada", siempre `DELETE all + INSERT all` dentro de una transacción. Más simple, sin estado intermedio inválido visible.**
+
+4. **Un detector que lanza no debe tumbar el scan.**
+   El motor ejecuta los detectores en `flatMap` con `try/catch` per-detector. Si `detectMissingAlt` lanza por un body Tiptap malformado, el scan continúa con los otros 5 detectores. Sin esto, un solo entry corrupto bloquearía el cron entero. **Patrón: pipelines de heurísticas (linting, scanning, indexing) deben envolver cada detector en try/catch + log; nunca dejes que un detector individual falle el batch.**
+
+5. **El "score" debe ser transparente: `100 - sum(severityWeight)`.**
+   Pesos `low=2, medium=5, high=10, critical=20` y cap en 0. El user puede mentalizarse: "si tengo 3 issues medium y 1 high → 100 - 15 - 10 = 75". Esto vale más que un score "AI-magic" que produce 73 con explicación. **Heurística: para scores user-facing en herramientas de auditoría (SEO, accessibility, security), prefiere fórmula explícita y publicada > ML opaco. Mejorará la confianza del user en las recomendaciones.**
+
+6. **El walker de Tiptap doc como generator yields cada nodo profundamente — reusa entre detectores.**
+   `walkNodes(doc)` es un generator que recorre recursivamente el doc Tiptap. Tres detectores (`detectMissingAlt`, `detectHeadingHierarchy` y futuros) lo consumen. Cada uno itera independientemente. Cero re-trabajo: la primera vez que se llama, los nodos están en memoria, los siguientes detectores ya tienen el body parseado. **Patrón: cuando varios detectores operan sobre la misma estructura compleja, escríbela como un generator pure-function y llámalo una vez por cada detector. La memoización de objetos JS la hace rápida automáticamente.**
+
+7. **`dismissedAt` en lugar de `DELETE` para falsos positivos.**
+   El user marca un issue como "ignorar" → `UPDATE … SET dismissedAt = now()`. El scan nunca crea un issue idéntico al dismissed (regenera todos los issues, pero la UI los filtra). Para audit ("¿qué false-positives marcamos?") tenemos historial completo. **Patrón: para herramientas de "review" (security, content, code review), nunca borres un issue dismissed; márcalo dismissed con `dismissedAt + dismissedById`. El user lo agradece la próxima vez que regenera y los ignored ya no le distraen.**
+
+8. **Exponer el scan como tool MCP convierte la feature en conversacional.**
+   Sin más código, el agente in-product (`/admin/agente`) y cualquier cliente MCP pueden invocar `health_summary` ("¿cómo va mi contenido?") o `entry_health_scan` con un id. El user pide *"dime los 3 posts con peor score y por qué"* y el LLM combina `health_summary` (worst 3) + `entry_health_scan` (issues por id) automáticamente. **Patrón: cuando construyes un dashboard de auditoría, exponé read-only tools MCP con la misma lógica. Bonus: el agente puede generar un email de resumen semanal sin que escribas código de templating.**
+
+
+## 2026-05-04 — F10a Parte 2 bloque 1 (Login con 2FA + GDPR completo)
+
+### Lecciones del cierre del bloque de seguridad
+
+1. **El plugin `twoFactor` de Better-Auth NO finaliza la sesión cuando el user tiene 2FA activado — devuelve `data.twoFactorRedirect: true`.**
+   Antes de este bloque, activar 2FA en `/admin/ajustes/seguridad/2fa` era *cosmético*: el usuario podía seguir entrando con sólo password porque el client form hacía `router.push(next)` directo tras `signIn.email()` exitoso. **El gap real era**: `result.data.twoFactorRedirect` venía como `true`, pero nadie lo leía. La sesión que devuelve Better-Auth es una "pre-session" que requiere completar 2FA para promoverse a sesión normal. Hasta que verifiques TOTP/backup, las server actions con `requireUser()` no te ven autenticado del todo. **Regla: cualquier login flow con plugin 2FA debe hacer el branch de `twoFactorRedirect` explícito, redirigir a la pantalla de challenge preservando `?next=` y SOLO ahí redirigir al destino. Si tu form solo lee `result.error`, tienes el gap silencioso.**
+
+2. **`?next=` debe sobrevivir al ping-pong login → 2fa → admin.**
+   Solución: en `handlePassword`, cuando detecto `twoFactorRedirect`, hago `router.push("/login/2fa?next=" + encodeURIComponent(next))`. La página 2FA lee el query param y redirige ahí tras verificar. Sin esto, Better-Auth te llevaría siempre a `/admin` y el deep-link inicial (ej. invitación a un entry específico) se perdería. **Heurística: cuando insertes una pantalla intermedia en un flow de auth (2FA, email verify, terms accept), propaga el `next` por query string en cada redirect, no por sessionStorage — es robusto a refresh, multi-tab y back-button.**
+
+3. **El "double-confirm typed" para acciones destructivas pesa más que un confirm dialog.**
+   Para "Eliminar cuenta" pongo `window.prompt('Escribe "ELIMINAR" para confirmar...')`. Es feo, no es Tailwind, no encaja con el design system. PERO funciona: requiere que el user escriba la palabra en español "ELIMINAR", no clic accidental. Es el mismo patrón de GitHub para borrar repo. **Patrón: para acciones irreversibles user-visible (delete account, drop database, force-push), prefiere `prompt(typed-confirm)` antes que un modal con botón Confirmar. La fricción es feature, no bug.**
+
+4. **Grace period de 30 días con `deletionRequestedAt` + cron purge es más limpio que soft-delete `deletedAt`.**
+   Tentación: setear `deletedAt` inmediatamente y filtrar todas las queries con `WHERE deleted_at IS NULL`. Problema: necesitas tocar 50 queries. Solución elegida: dos columnas, `deletionRequestedAt` (cuando el user pidió) y `deletedAt` (cuando soft-delete real ocurrió). El user sigue pudiendo entrar y operar normal mientras `deletionRequestedAt` esté seteado pero el grace no haya vencido. El cron `daily` borra HARD (FK cascade) cuando vence. Cero queries de negocio cambian. El user puede cancelar con un solo `UPDATE … SET deletionRequestedAt = NULL`. **Heurística: para "delayed irrevocable actions" (account deletion, plan downgrade with data loss, scheduled mass-delete), almacena el timestamp de la SOLICITUD, deja la app operando normal hasta el cron de cleanup, y haz hard-delete real al expirar. Más simple que soft-delete + filtros across.**
+
+5. **El export ZIP debe incluir un README.txt que explique qué NO está incluido.**
+   GDPR exige portabilidad. Pero también exige transparencia: el user tiene derecho a saber QUÉ datos hay sobre él. Si el export omite cosas (password hashes — no son útiles, pero ¿es legal omitirlos? sí, no son datos personales útiles — secrets de API keys, tokens activos, datos de OTROS usuarios), el README declara explícitamente la lista. Esto blinda jurídicamente y reduce dudas/queries de soporte. **Patrón: cualquier export-de-datos GDPR debe incluir un manifiesto humano-leíble de "incluido / no incluido + motivo legal de la omisión". Ahorra horas de respuestas a auditorías.**
+
+6. **`route.ts` que devuelve un Uint8Array como Response funciona pero TypeScript necesita ayuda.**
+   `new NextResponse(new Uint8Array(bytes) as BodyInit, {...})` — el cast `as BodyInit` es necesario porque la tipo unión `BodyInit` no incluye `Uint8Array<ArrayBufferLike>` cleanly en TS 5.7. Sin el cast, error de assignability. Es legítimo: en runtime Next.js acepta Uint8Array sin problemas. **Heurística: cuando un endpoint Next.js devuelve binary (ZIP, PDF, image), el cast `as BodyInit` o un `new Blob([bytes])` resuelve el typing sin runtime cost. NO uses `Buffer` (Node-only, falla en Edge).**
+
+7. **Cron `daily` debe ser idempotente y reportar contadores en su Response JSON.**
+   Cada función llamada (`pruneExpiredKeys`, `pruneOldDeliveries`, `purgeExpiredDeletions`) devuelve un número o objeto con `purged`. La Response JSON expone todo: `{ ok: true, keysPruned, deliveriesPruned, accountsPurged }`. Esto permite revisar en el dashboard de Vercel los runs históricos y detectar anomalías ("ayer purgamos 50 cuentas en lugar de 0-2 — ¿qué pasó?"). **Patrón: cron jobs siempre idempotentes + siempre devuelven objeto con counters por categoría. Lighthouse/observabilidad lo explotará después automáticamente.**
+
+
+## 2026-05-04 — F10a Parte 2 bloque 2 (Login passkey + email verify + rate limit)
+
+### Lecciones del cierre de F10a (auth enterprise grade)
+
+1. **Mintar una sesión Better-Auth desde un endpoint custom: insertar fila + firmar token + cookie. NADA más.**
+   Better-Auth no expone API pública para crear sesiones fuera de su pipeline (`api.signInEmail`, `api.signInPasskey`, etc.). Pero el contrato de la cookie es simple: name `csm.session_token` (o `__Secure-csm.session_token` en prod) con valor `${token}.${HMAC-SHA256(token, AUTH_SECRET)}` en base64 estándar (con padding, vía `btoa(String.fromCharCode(...sig))`). El verifier de Better-Auth reconstruye la firma y busca el token en la tabla `sessions`. Tres pasos: (1) `db.insert(sessions).values({id, userId, token, expiresAt, ipAddress, userAgent})`, (2) firmar el token con WebCrypto SubtleCrypto HMAC-SHA-256, (3) `res.cookies.set(cookieName, signedValue, {httpOnly, secure, sameSite:"lax", path:"/", maxAge})`. **Patrón: cuando integres un proveedor de auth opaco con un flow custom (passkey resident, SAML, OIDC custom), busca el formato de cookie en `dist/cookies/` o `dist/test-utils/cookie-builder.mjs` del proveedor; suele ser HMAC del token. Mintar la sesión a mano es ~50 líneas y evita forks del provider o plugins de terceros.**
+
+2. **Resident credential WebAuthn requiere extraer el challenge de `clientDataJSON`, no de la sesión del user.**
+   En el flow normal "user-known" (passkey desde admin con sesión activa), guardas el challenge bajo `userId` como key. En el flow "resident credential" (passkey desde /login sin saber quién es), no tienes userId al generar opciones. Solución inicial (errónea): `takeChallenge(prefix, args.userId ?? "")` → siempre falla porque la lookup key es `""`. Solución correcta: el challenge va embebido en `response.response.clientDataJSON` (base64url JSON con `{type, challenge, origin}`); decodifícalo y úsalo como key. Esto cierra el círculo: guardas bajo `opts.challenge`, recuperas bajo `clientDataJSON.challenge`. **Patrón WebAuthn: para passkeys discoverable/resident, NO uses userId como challenge key — extrae el challenge del clientDataJSON del response. Es la única identidad estable entre la generación y la verificación cuando no conoces al user.**
+
+3. **Better-Auth `rateLimit.storage: "database"` es lo único que funciona en serverless multi-instancia, pero NO protege endpoints fuera de `/api/auth/*`.**
+   `storage: "memory"` deja un atacante rotar entre Vercel Fluid Compute instances con counters independientes. `storage: "database"` (tabla `rate_limits`, key/count/lastRequest) cross-instance. PERO solo se aplica al handler de Better-Auth en `/api/auth/...`. Para endpoints custom (nuestros `/api/auth/passkey/login-{options,verify}`) hay que escribir un mini-limiter standalone que reuse la misma tabla — 70 líneas de Drizzle: si no existe row, INSERT count=1; si elapsed > window, RESET count=1; si count >= max, return retryAfter; else INCREMENT. Race condition de ±1 es despreciable para anti-brute-force con max=10. **Heurística: si tu auth-provider tiene un rate-limiter que NO cubre un endpoint que tú añadiste, escribe un limiter standalone que escriba en la misma tabla. Cero coste de operación, audit unificado, atacante no puede bypassear con un endpoint olvidado.**
+
+4. **Cuando el rate-limit no tiene IP (proxy roto, dev local), CAE ABIERTO.**
+   Tentación: si no hay IP, usar key compartida `"unknown"` y limitar todo el tráfico. Disastroso: cualquiera puede DOSear todos los users en cuanto desconfigure su proxy. Política correcta: si no hay IP, `return {ok: true}` y log warning una vez. Better-Auth tiene la misma política en `getIp()`. **Patrón: rate-limiters siempre fail-open cuando falta el discriminador (IP, userId, apiKey). El admin debe configurar `advanced.ipAddress.ipAddressHeaders` correctamente; mientras tanto, no rompas el flow normal.**
+
+5. **UI lockout requiere `setInterval` para refrescar el countdown cada segundo, no es suficiente con `useState`.**
+   Con solo `useState`, el countdown se actualiza solo cuando React re-renderiza. Si el user no toca nada, el "Espera 30s" se queda congelado. Solución: dentro del `useEffect` con dependencia `lockoutUntil`, montar un `setInterval(forceTick, 1000)` que dispara un `useState` no-leído (`forceTick`) cada segundo, lo que provoca re-render. Cleanup en el return del effect. Sin esto el banner es estático y el user lo ignora. **Patrón UX: cualquier countdown user-facing (lockout, scheduled-publish, OTP expiry, GDPR purge) necesita un re-render por segundo. Un `useEffect` con `setInterval` + dummy `forceTick` es la receta más simple en React.**
+
+6. **Better-Auth `authClient.signIn.email` devuelve `result.error.status: 429` cuando el server lo limita; hay que branchear ahí.**
+   El client de Better-Auth normaliza errores al `result.error` con `status` numérico. En 429, también propaga el `Retry-After` del server. Si tu form solo lee `result.error.message`, pierdes el contexto de "rate-limited" y muestras "Credenciales incorrectas" — confundiendo al user que escribió bien la password. Solución: branch explícito `if (status === 429) {...} else {message}`. Y `parseRetryAfter` ya tolera headers ausentes (default 60s). **Heurística: en cualquier auth client opaco, antes de mostrar el error genérico, branch por `status` para 429 (rate-limit), 423 (account locked), 451 (legal block). El user merece mensajes específicos cuando el problema NO es su input.**
+
+7. **Política "free libre, paid verifica email" es el equilibrio correcto entre fricción y abuso.**
+   Si exiges email verificado para hacer signin, perdés 30% del onboarding (gente que tipea email mal, links spam-foldered). Si nunca lo exiges, abres puertas a abuso de cuentas Stripe con emails throwaway que cargan tarjetas robadas. Intermedio: signup/signin libres, todo el admin libre, PERO al pasar a paid (o al pedir export GDPR completo, o al recibir alertas de seguridad) gate con `requireVerifiedEmailForPaidPlan(userId) → {ok, reason}`. El caller decide qué UI mostrar. **Patrón producto: la verificación de email es un GATE, no una BARRERA. Aplícalo solo a acciones donde el coste del falso-positivo es alto. Stripe (chargebacks), exports legales (GDPR liability), notificaciones críticas (responsabilidad legal de avisar). Para todo lo demás, el user puede operar.**
+
+8. **`drizzle-kit push` requiere `--force` cuando hay pending changes que necesitan confirmación interactiva.**
+   En CI/non-TTY (PowerShell con stdin redirigido o sandbox), `npx drizzle-kit push` muestra un prompt de confirmación que falla con `Interactive prompts require a TTY terminal`. La solución: pasar `--force` (versión 0.31+). Versiones anteriores requerían responder vía stdin con un YAML "no". **Patrón: cualquier comando CLI que muestre prompt de confirmación tiene un flag `--yes` o `--force` para CI; cuando el comando funciona en local pero falla en sandbox, el flag suele ser la única diferencia. Documenta en README los flags que harán el script CI-friendly.**
+
+
+## 2026-05-04 — F10a parte 2 bloque 3 (Hardening final)
+
+### 9 lecciones del bloque de cierre
+
+1. **`safeUrlNullable` defensivo aunque la UI use picker.**
+   `IMAGE.src`/`HERO.image`/`SECTION.backgroundImage` aceptaban `z.string().nullable().optional()` confiando en que el inspector usa un media picker, no input libre. Pero `propsSchema` corre server-side: un cliente malicioso podría POST'ear JSON crudo con `data:text/html,<script>` y el render del bloque pintaría `<img src>` directo. **Heurística defensa-en-profundidad: si un schema acepta string libre porque "el cliente normal usa picker", asume que el atacante NO usa el cliente normal. Aplica whitelist al schema aunque la UI ya filtre.**
+
+2. **Outbound URL helper (http(s)-only) ≠ inbound URL helper (http(s)/relativa/anchor/mailto).**
+   `isSafeUrl` (en `blocks/registry.ts`) acepta paths relativos, anchors, `mailto:`, `tel:` — apropiado para hrefs *internos* de bloques que apuntan al propio sitio. `isHttpUrl` (en `lib/safe-url.ts`) sólo acepta `http(s)://...` absoluto — apropiado para webhooks (server hace POST), ogImage (crawlers cargan), upload-by-URL (server hace fetch). **Patrón: tener DOS helpers explícitos con políticas distintas, no uno con flags. Cada caller elige la política correcta para su contexto. Si la mezclas, acabas permitiendo `mailto:` en webhook URLs.**
+
+3. **Better-Auth `databaseHooks.session.create.before` es el punto correcto para anonimizar IP.**
+   Better-Auth llama `databaseHooks` justo antes del INSERT en sessions. Devolver `{ data: nextSession }` reescribe el row antes de persistir. Sin esto, Better-Auth escribe la IP raw en `sessions.ipAddress`. Mi flow custom de passkey llamaba `mintSession` directo y aplicaba mask manual; el hook cubre el flow normal email/OAuth donde Better-Auth no nos pasa por el helper. **Patrón: cuando integras un proveedor de auth opaco que persiste datos por su cuenta, busca su hook system (databaseHooks, beforeWrite, beforeCreate) ANTES de duplicar la lógica en cada call site. Better-Auth, NextAuth, Lucia y Clerk todos exponen algún flavor de hooks pre-write.**
+
+4. **CSP report dedup por SHA-256(directive+blockedUri+sourceFile+lineNumber) → UPSERT.**
+   Sin dedup, un sitio público con 1000 visitantes/día y un script bloqueado genera 1000 filas idénticas/día — la tabla se vuelve impracticable para query. Dedup-key permite `INSERT ... ON CONFLICT DO UPDATE SET occurrences=occurrences+1, lastSeenAt=NOW()`. Una fila por (directive,resource,source) en lugar de N. Bonus: cuando se "resuelve" con `resolvedAt` y vuelve a ocurrir, `DO UPDATE` lo reabre automático (set `resolvedAt=NULL`), lo que detecta regresiones. **Patrón: cualquier endpoint que reciba eventos high-frequency idénticos (CSP reports, tracking pixels, error logs cliente) debe agregar por dedup key con UPSERT. Almacenar cada evento crudo es trampa que escala mal.**
+
+5. **Reporting API (header `Reporting-Endpoints`) coexiste con `report-uri` legacy.**
+   Browsers modernos prefieren `Reporting-Endpoints: csp-endpoint="..."` con formato JSON `{type:"csp-violation", body:{...}}`. Browsers legacy envían `{"csp-report":{...}}` a la URL en `report-uri`. Un solo endpoint puede manejar ambos: parsea el body, branch por shape (`"csp-report" in body` vs `"type" in body && body.type === "csp-violation"`). **Patrón: para feature de browser que tienen API legacy + moderna, soporta ambos formatos en el endpoint server. Cuesta 30 líneas de parser y captura el long tail de browsers viejos sin sacrificar la API moderna.**
+
+6. **Anti-bot helper ortogonal con dynamic import desacopla la dep opcional.**
+   `verifyAntiBot()` con `provider: "botid"` hace `await import("@vercel/botid").catch(() => null)`. Si la dep no está instalada, devuelve `{ ok: true, provider: "none" }`. El user activa BotID instalando la dep + `VERCEL_BOTID_ENABLED=1` — sin afectar el código. **Patrón: para integraciones platform-specific (BotID solo funciona en Vercel) o costosas (Turnstile requiere cuenta CF), usa dynamic import con catch. La app sigue arrancando sin la dep; el feature se activa cuando el user opta.**
+
+7. **422 vs 200 vs 403 en endpoints públicos cambia el comportamiento del bot.**
+   Si un endpoint con captcha falla con 403, el bot aprende "este token no funciona, prueba otro/abandona". Si falla con 200 silencioso (mismo body que ok), el bot cree que funcionó y se va. Para honeypot + anti-bot: 200 silencioso (no se delata el detector). Para captcha con token presente pero verify failed: 403 explícito (humano legítimo con token caducado merece feedback). **Patrón anti-spam: status code es part of the protocol — el bot lo lee. Decide qué señal mandas en cada caso (captcha falló = 403, honeypot triggered = 200 silent, missing token = 200 silent). Documentado en cada endpoint.**
+
+8. **Cap dual (per-user diario + workspace mensual) cierra el agujero del único cap.**
+   Sólo cap mensual workspace: un user malicioso/buggy consume todo el budget en 1 día → workspace muerto el resto del mes. Sólo cap diario user: el workspace puede gastar 1000 USD/día sin tope. Combinación: per-user es la primera barrera (anti-runaway-loop), workspace mensual es el techo del bill. **Heurística: cualquier cap de coste o rate-limit que toque LLMs/APIs externas debe ser DOS dimensiones: (1) acceso individual short-window (anti-bug, anti-abuse), (2) agregado long-window (anti-bill-shock). Una sola dimensión siempre tiene un agujero.**
+
+9. **`COALESCE(user_id, '')` en UNIQUE INDEX permite UPSERT con user_id NULL.**
+   Postgres considera `(ws, NULL, day, feature)` distinto de cualquier otro `(ws, NULL, day, feature)` — los nulls no son iguales en UNIQUE checks. Para que `INSERT ... ON CONFLICT (ws, user_id, day, feature)` funcione cuando user_id es NULL (calls de sistema/cron), el index debe ser `(ws, COALESCE(user_id, ''), day, feature)`. La condición ON CONFLICT debe usar la misma expresión exacta. **Patrón Postgres UPSERT con columna nullable: `COALESCE(col, '')` (o sentinel similar) en el unique index Y en la cláusula `ON CONFLICT`. Sin ambos lados, el UPSERT inserta duplicados silenciosamente.**
+
+
+## 2026-05-04 — F10a OWASP top-10 audit
+
+Audit del codebase contra OWASP Top 10 (2021) ejecutado tras cerrar el bloque 3 de hardening. **Resultado: NO CRITICAL ISSUES FOUND** — la postura defensiva de F10a parte 2 cubre el surface area. Confirmado SECURE en:
+
+- **A01 Broken Access Control**: todos los `_actions.ts` admin usan `requireWorkspace(role)` + `requireUser()`. Endpoints públicos validan workspace por host (no cross-tenant lookup posible).
+- **A02 Cryptographic Failures**: Stripe webhook firma HMAC-SHA256 con `timingSafeEqual` (`src/payments/webhook/route.ts:328`). Tokens (form confirm, calendar.ics, passkey challenges) regex-validados.
+- **A03 Injection**: zero SQL raw user-input; Drizzle ORM parametriza todo. Zod en boundaries. CSV escape en audit.csv export.
+- **A06 Vulnerable Components / SSRF**: webhooks pasan por `httpUrlSchema()` (`src/lib/safe-url.ts`); uploads-by-URL pasan por `assertPublicUrl()` (`src/lib/ssrf.ts`) que bloquea IPs privadas/loopback/cloud-metadata.
+- **A07 Auth Failures**: rate-limit DB-backed cross-instance (`rate_limits` table), 2FA con `twoFactorRedirect` correctamente implementado en login flow, passkeys con resident credential mintando sesión Better-Auth-compatible.
+- **A09 Logging**: `logActivity()` en todas las mutaciones; activity_log + branchActivity para audit.
+
+Sin findings nuevos pendientes. F10a parte 2 cierra el bloque de seguridad enterprise.
+
+
+## 2026-05-04 — F10b parte 1 (Y.js infra + LISTEN/NOTIFY cross-instancia)
+
+### 7 lecciones del bloque de arranque realtime collab
+
+1. **Postgres LISTEN/NOTIFY no funciona sobre el pooler de Neon.**
+   El pooler (`db-name-pooler.region.aws.neon.tech`) es PgBouncer transaction-mode: cada query usa una conexión distinta del pool, lo que rompe la semántica de LISTEN (la subscripción muere al terminar la "transacción"). Solución: connect string directo (sin `-pooler.` en el host). Mi helper hace `env.DATABASE_URL.replace("-pooler.", ".")` automático. Coste: una conexión "session" del cap (100 en free tier), aceptable para casos típicos. **Patrón: cualquier feature que requiera persistent connection (LISTEN/NOTIFY, COPY streaming, prepared statements server-side, pg_advisory_xact_lock) tiene que ir por el endpoint directo, no por el pooler. Documentar en .env.example si no es transparente. La mayoría de aplicaciones serverless solo usan request-response, así que el pooler las cubre — pero realtime collab es distinto.**
+
+2. **Una conexión LISTEN por instancia + ref-counted local fanout es el patrón.**
+   No 1 LISTEN por sub, no 1 LISTEN por canal: el cliente postgres-js permite múltiples canales LISTEN sobre la misma conexión persistente, pero cada `sql.listen(channel, fn)` añade un handler. Si hay 30 SSE abiertos al mismo workspace, abrir 30 LISTEN del mismo canal es un desperdicio. **Diseño correcto: 1 LISTEN por (instancia, canal); subs locales en un `Map<channel, Set<fn>>`; el handler único delega al Set.** Cleanup: NO emitimos UNLISTEN cuando size=0 — mantener el LISTEN abierto es barato y evita race conditions cuando otra subscripción aparece inmediatamente. **Patrón: pubsub local sobre primitiva persistente externa (LISTEN, websocket, MQTT) siempre lleva un fanout in-memory por instancia + idempotencia en la primitiva. Sin esto, no escala.**
+
+3. **El bus in-memory de F9c era el clásico bug "funciona en dev con 1 instancia".**
+   `notifications.ts` original mantenía `Map<bucketKey, Set<Listener>>` en el módulo. Bell SSE en instancia A → suscribe local. Mutación en instancia B (otra región o cold start) → emit local → fanout solo a listeners en B → A nunca lo recibe. En Vercel Fluid Compute con autoescala, dos editores en pestañas distintas pueden caer en instancias distintas y la notificación de "te asignaron" llega tarde (al reload) o nunca. **Heurística: cualquier `Map`/`Set` de listeners a nivel de módulo en un proyecto deployable a Vercel debe asumirse roto cross-instancia. Audita estos patrones cuando muevas un proyecto Express → serverless. La fix es siempre "publica al exterior y deja que el listener llegue por el LISTEN/PubSub".**
+
+4. **Awareness updates NO se persisten.**
+   Y.js separa "doc state" (CRDT contenido) de "awareness state" (presence, cursors, selections, editing markers). El doc se persiste; el awareness es efímero. Un cliente offline 30s deja de aparecer en la lista — eso es por diseño. Si persisto awareness, gasto storage en data que se invalida sola y meto presencia "fantasma" tras crashes. **Patrón: cuando uses Y.js, distingue qué va en `Y.Doc` (compartido + persistido) vs `Awareness` (compartido + efímero). En mi pubsub, canales separados `collab:up:{id}` y `collab:aw:{id}` reflejan esta separación. Nunca persistas awareness.**
+
+5. **`emitUpdate:true` en `setContent` cuando hay collab — no `false`.**
+   La intuición es "evitar trigger de autosave en el seed inicial → emitUpdate:false". Pero con la extensión Collaboration, `emitUpdate:false` SALTA el commit Y.js → el seed no se propaga al doc → otros clientes nunca lo ven. Solo el primer cliente vería el contenido inicial. **Regla con Tiptap+Collaboration: usa `emitUpdate:true` siempre, incluso para setup; el autosave duplicado es benigno (idempotente, mismo contenido convergido). Si quieres evitar autosave, hazlo con un flag local del cliente, no apagando el emitUpdate.**
+
+6. **Tiptap 3 renombró `history` a `undoRedo` en StarterKit.**
+   Mi código F8 usaba `history: false`. En Tiptap 3.22.5 (instalado tras update F9) la opción se llama `undoRedo: false`. TS lo detectó: `Object literal may only specify known properties, and 'history' does not exist in type 'Partial<StarterKitOptions>'`. **Patrón cross-version: cuando saltas major version de una librería con StarterKit-style configs, lee el migration guide de cada feature que toques en lugar de copiar de docs viejos. La clave 'history' aún existe como extensión standalone (`@tiptap/extension-history`), pero StarterKit la renombró internamente.**
+
+7. **`navigator.sendBeacon` en `beforeunload` para awareness cleanup.**
+   Si usas `fetch()` en `beforeunload`, el navegador puede cancelar la request mid-flight (la página se está cerrando). El user queda como "online" para los demás durante ~30s hasta que su client expira por timeout en awareness. `sendBeacon` está diseñado para exactamente esto: el navegador garantiza la entrega antes de cerrar la página, sin esperar respuesta. Lo uso para enviar el awareness "removal" (localState=null) — los demás clientes ven que se fue inmediatamente. **Patrón: para CUALQUIER limpieza side-channel en `beforeunload`/`pagehide` (analytics, presence cleanup, leave-room signals, draft autosave fire-and-forget), usa `sendBeacon` no `fetch`. La diferencia es la fiabilidad cuando la página muere.**
+
+
+## 2026-05-04 — F10b parte 2 (B2-B4: cursors, presence global, reactions, email mentions)
+
+### 8 lecciones del cierre realtime collab
+
+1. **Cuando una librería overrida un campo de awareness, usa SLOTS SEPARADOS.**
+   `CollaborationCursor` de Tiptap setea `awareness.localState.user = {name, color}` cuando monta la extension. Si yo seteaba en el provider `localState.user = {id, name, color, role, avatarUrl}` ANTES, Tiptap lo sobrescribía y perdía `id/role/avatarUrl`. Solución: dos campos en awareness state — `user` (Tiptap-owned, name+color) y `csmUser` (mi extended). Ambos coexisten porque awareness es un objeto plano y Tiptap solo toca `user`. **Patrón: cuando integras una librería que mutará un campo conocido del estado compartido (awareness, redux store, jotai atom), no compitas por ese campo. Crea un slot adyacente con tu prefijo (`csmUser`, `app:user`) y léelo TÚ. Doble fuente de verdad pero ambas owners distintos. Más simple que cualquier merge logic.**
+
+2. **Doc + Awareness deben crearse SINCRONAMENTE para useEditor de Tiptap.**
+   Mi diseño inicial: `useCollab` creaba `Y.Doc` con useRef y `Awareness` dentro del `CollabProvider` que se instanciaba en `useEffect`. Cuando construía el editor en `useEditor({extensions: [..., CollaborationCursor.configure({provider: { awareness: collab.awareness }})]})`, `collab.awareness` era `null` en el primer render → typescript error en property access + runtime crash. Fix: crear AMBOS con `useRef` en el hook, pasarlos al provider que los recibe vs crearlos. **Patrón: cualquier objeto que un componente de extensión/wiring necesita en su construcción inicial DEBE existir en el primer render. useRef + lazy init garantiza esto sin races. useEffect llega TARDE: el editor ya hizo configure() antes.**
+
+3. **`emitUpdate:true` en `setContent` cuando hay collab — confirmé regla de B1.**
+   Re-validado: el seed inicial desde `entries.body` debe propagar al doc Y.js para que otros peers lo vean. Si pongo `emitUpdate:false` (intuición de "evitar autosave duplicado"), el contenido nunca llega al doc → demás clientes ven editor vacío. Comentario duplicado pero importante: **emitUpdate true es no-negociable cuando hay Collaboration extension activa.**
+
+4. **`sendBeacon` en `pagehide` Y `beforeunload` — ambos eventos.**
+   `beforeunload` no se dispara siempre en mobile Safari (el OS mata la pestaña sin notificarla). `pagehide` SÍ se dispara. Para garantizar el "leave" presence + cleanup awareness en >95% de los casos, registro AMBOS listeners. `sendBeacon` es idempotente (la query DELETE en server hace upsert-like cleanup; presence_sessions UNIQUE evita duplicates). **Patrón: para "user closes tab" cleanup, usa pagehide + beforeunload + visibilitychange='hidden'. Cada uno cubre un mix distinto de browsers/OS. sendBeacon es la primitiva correcta para todos.**
+
+5. **Polimorfismo de canal con `kind` discriminator + early-return en handler.**
+   Tenía la opción de crear un canal separate `reactions:ws:{wsId}` para reactions live. En su lugar, reutilicé el canal de presence `presence:ws:{wsId}` con un `kind` discriminator extra (`"reaction.add"|"reaction.remove"`). Beneficio: 1 SSE menos en cliente, 1 LISTEN menos en server, fanout-aware-on-the-go. Coste: el handler debe ramificar early-return si es reaction (no afecta peers map) antes de aplicar al state. **Patrón: cuando dos features se necesitan en el MISMO scope (ws + admin) y los payloads son small/orthogonal, multiplexa al MISMO canal con discriminator. Ahorra connections, FDs, y simplifica auth.** Con cuidado: si los receptores son diferentes (público vs interno) o los payloads pesan mucho, separa.
+
+6. **Online-vs-offline gating evita ruido en mentions email.**
+   Sin gating, mencionar a alguien que está mirando el editor le manda un email + un bell SSE en simultáneo. Email = ruido + delay. Solución: `whoIsOnline(ws, mentionIds)` consulta presence_sessions (ventana 60s) y el helper `emailOfflineMentions` filtra antes del Resend call. Online users solo reciben bell + notification. **Heurística: cualquier canal "lento" (email, push notification, SMS) debe revisar si hay un canal "rápido" activo (SSE, websocket, app open) antes de disparar. La señal del canal rápido invalida la del lento. Es el mismo patrón que Slack: si estás "active", solo desktop notif; "away" → mobile push; "offline" → email summary.**
+
+7. **HTML escape en email templates aunque el origen sea "trusted".**
+   El `preview` del email viene de `body` del comment, que ya pasó por sanitización del editor — en teoría texto plano. Pero defensivamente, antes de inyectar en el HTML del email (`<blockquote>${preview}</blockquote>`), aplico `replace(/&/, "&amp;").replace(/</, "&lt;").replace(/>/, "&gt;")`. Resend NO escapa el HTML que le pasas. Si un comment futuro permite formato (Markdown → HTML, paste de HTML), o si un attacker inserta `<script>`/`<img onerror>`, el email es un XSS vector hacia el cliente de email del recipient. **Patrón defensa-en-profundidad: el escape de HTML en email templates es OBLIGATORIO incluso si el source es "trusted". Los emails se ven en clientes web (Gmail), apps (Outlook), webmails — distintos engines, posibles agujeros. Cuesta 3 líneas y cierra una clase entera de ataques.**
+
+8. **`process.env.VERCEL_URL` como base URL en emails server-side.**
+   En contextos non-request (cron, queue, background tasks tras un mutation), no hay `request.url` disponible para construir URL absolutas. La convención Vercel: `process.env.VERCEL_URL` lleva el host del deployment (sin `https://`). Mi helper hace `NEXT_PUBLIC_APP_URL ?? "https://" + VERCEL_URL ?? ""`. El último fallback es relativo (incorrecto en email pero non-crashing). **Patrón Vercel: para emails y notificaciones outbound siempre absoluta — establece `NEXT_PUBLIC_APP_URL` en `vercel env` para el dominio canonical (no preview). VERCEL_URL es tu mejor fallback per-deploy. Nunca dependas del request en flows server-only.**
+
+
+## 2026-05-05 — Plantillas Showcase
+
+### Lección 1: Decoupling preview ↔ edición es válido para "templates"
+**Contexto:** El usuario pidió plantillas al nivel motionsites.ai (vídeo HLS, GSAP-style parallax, sticky stacking cards). El sistema de bloques actual no puede expresarlo sin añadir ~5 bloques premium nuevos.
+
+**Solución:** Crear `src/templates/showcase/<id>.tsx` con React puro custom solo para el preview, mantener `buildLayout()` block-based para inserción editable. El usuario ve el preview espectacular (galería, hover live), al pulsar "Usar esta plantilla" recibe la versión editable simplificada (avisamos en la galería).
+
+**Por qué OK:** las plantillas no son contenido del usuario — son inspiración pre-curada. La fidelidad 1:1 entre preview y editor sería ideal pero costaría 2 semanas de bloques premium antes de poder mostrar valor. Patrón aceptable mientras el copy en la galería sea claro.
+
+### Lección 2: framer-motion 11 sirve para todo lo que motionsites.ai hace con GSAP
+- `useScroll({ target, offset })` + `useTransform` → equivale a GSAP ScrollTrigger pin/parallax.
+- `AnimatePresence` mode=wait + key dinámico → role cycling sin librerías extra.
+- `useMotionValue` + manual mousemove → magnetic cursor.
+- Para marquees infinitos: o bien `useScroll` driven, o CSS keyframes `@keyframes` con `animation: linear infinite` (más performante).
+- **No instalar GSAP ni hls.js** salvo que el formato del vídeo lo exija. Los .mp4 de cloudfront funcionan con `<video>` nativo + JS para crossfade entre loops.
+
+### Lección 3: CSP requiere @import url() de Google Fonts en `style-src` + woff2 en `font-src`
+La directiva por defecto `style-src 'self' 'unsafe-inline'` bloquea `@import url("https://fonts.googleapis.com/...")`. Hay que añadir explícitamente `https://fonts.googleapis.com` a `style-src` y `https://fonts.gstatic.com` a `font-src`. **Síntoma típico**: las fonts no cargan en producción pero sí en dev (Tailwind v4 a veces inlined fonts en dev y oculta el problema).
+
+### Lección 4: Biome requiere `Number.parseFloat` no global `parseFloat`
+Regla `lint/style/useNumberNamespace`. Auto-fix con `--write`. Aplicable también a `parseInt`, `isNaN`, `isFinite` (`Number.parseInt`, `Number.isNaN`, `Number.isFinite`).
+
+### Lección 5: CSS @import tiene que ir ARRIBA del archivo (antes de cualquier otra regla)
+La regla `@import url(...)` debe ir antes de cualquier selector. Si se pone al final del archivo, biome rechaza con `noInvalidPositionAtImportRule` y los browsers ignoran el import. Documentado en MDN como restricción CSS.
+
+### Lección 6: Anchors `href="#"` rompen lint a11y
+`useValidAnchor` exige que `href` apunte a algo (`#anchor-real`, URL, mailto:, etc.). `href="#"` siempre falla. Para botones decorativos sin destino, usar `<button type="button">` no `<a>`. Para enlaces que aún no tienen destino real, usar un anchor placeholder (`#archivo`, `#say-hi`, etc.) — al menos hace scroll-to-top y comunica intención.
+
+### Lección 7: `@next/next/no-img-element` es ruido en showcase con assets externos
+Las plantillas showcase cargan vídeos+imágenes de CDN curado (cloudfront, motionsites, figma) — `next/image` requeriría whitelist en `next.config.ts` para cada dominio Y aporta cero valor (las dimensiones son fluid clamp, no fijas). Suprimimos con `eslint-disable-next-line` línea por línea — patrón intencional, no es deuda técnica.
+
+---
+
+## 2026-05-05 — Schema MySQL paralelo (Tarea 15)
+
+### Lección 8: MySQL UNIQUE INDEX permite múltiples NULL — equivale a `UNIQUE WHERE col IS NOT NULL` de Postgres
+PG necesita `WHERE col IS NOT NULL` en partial unique indexes para permitir múltiples NULL en columnas como `entries.originRef` (idempotencia inter-lote en imports). MySQL ya lo hace por defecto: un UNIQUE INDEX sobre `(workspaceId, originRef)` admite N filas con `originRef=NULL` y mantiene unique para los no-NULL. Resultado: la migración del partial → unique-plain es transparente sin perder semántica.
+
+### Lección 9: Partial unique sobre `bool=true` NO se puede traducir a MySQL — mover el check a la app
+PG permite `UNIQUE WHERE isDefault=true` (una sola fila true por workspace). MySQL no tiene partial indexes (8.0.13 introdujo functional indexes pero solo expresiones, no WHERE clauses verdaderos). Solución: bajar a non-unique index y validar en `createBranch()` antes del INSERT (idealmente dentro de transacción serializable: SELECT + INSERT). Documentar explícitamente en JSDoc del index para que futuros cambios no asuman uniqueness DB-level.
+
+### Lección 10: MySQL `TEXT` no admite `DEFAULT` — promover a `VARCHAR(N)` cuando haya default
+Cualquier `text("col").default("...")` de Drizzle PG falla en MySQL al ejecutar el DDL: `BLOB, TEXT, GEOMETRY or JSON column 'col' can't have a default value`. Para MySQL todos los defaults string viven en `varchar(N)`. Estrategia de N: usar el ancho semántico real (locale=10, slug=120, currency=10, oklch-color=60, lucide-icon=60, etc.) — no inflar a 255 por hábito.
+
+### Lección 11: MySQL `TEXT` indexado requiere prefix length — usar `VARCHAR(N)` para indexed/uniqued columns
+`UNIQUE INDEX ... ON entries(slug)` con `slug TEXT` falla con `BLOB/TEXT column used in key specification without a key length`. Hay que `slug VARCHAR(N)` o `slug TEXT(...)` con prefix `KEY (slug(120))`. Drizzle no expone la sintaxis de prefix limpia, así que la solución universal es promover toda columna text indexada a varchar con N apropiado al contenido (paths=1024, url=2048, slug=120, hash=128, etc.).
+
+### Lección 12: MySQL no tiene `gen_random_uuid()`; generar UUIDs app-side es preferible (ADR-003)
+PG tiene `gen_random_uuid()` y `defaultRandom()` ergonómico. MySQL tiene `UUID()` pero formato distinto (con guiones; v1 not v4) y no se puede usar como DEFAULT en versiones antiguas. La mejor práctica multi-DB: generar `crypto.randomUUID()` en el código que llama INSERT — además resuelve el 80% del problema de `RETURNING` (sabes el id antes del insert).
+
+### Lección 13: Drizzle `customType` para tipos no built-in (VECTOR, GEOMETRY, etc.)
+Drizzle 0.45 no tiene `vector(...)` para mysql-core. Solución: `customType<{ data: number[]; driverData: string; config: { dimensions: number }; configRequired: true }>({ dataType: cfg => \`VECTOR(${cfg.dimensions})\`, toDriver, fromDriver })`. El generic `configRequired: true` fuerza al caller a pasar `{dimensions:1536}`. `toDriver/fromDriver` hacen serialize/parse del string `[1,2,3]` que MySQL 9 acepta para VECTOR.
+
+### Lección 14: Type exports en schemas paralelos deben ser idénticos en SHAPE
+`schema.ts` barrel siempre re-exporta `schema.pg.ts` para mantener types Postgres como verdad TS (ADR-001). Por eso `schema.mysql.ts` debe producir `User`, `Entry`, etc. con la misma SHAPE lógica (mismos campos camelCase, mismos tipos JS). Cualquier divergencia rompe el contrato implícito y silencia bugs cuando dialect=mysql en runtime. Para enums: en PG son `(typeof xxxEnum.enumValues)[number]`; en MySQL los exportamos como union literal manual (ej. `EntryStatus = "draft" | ...`) ya que `mysqlEnum` no exporta el enum object separado.

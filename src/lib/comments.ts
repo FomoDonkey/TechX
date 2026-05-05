@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { thresholdToStatus } from "@/ai/moderation";
+import { getModerationThresholds, thresholdToStatus } from "@/ai/moderation";
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning } from "@/db/dialect";
 import { type Comment, comments, entries, users } from "@/db/schema";
 import { emitAsync } from "@/webhooks/dispatcher";
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, isNull, sql } from "drizzle-orm";
 
 export type CommentItem = {
   id: string;
@@ -49,26 +50,28 @@ export async function createComment(input: {
   aiReason: string;
 }): Promise<Comment | null> {
   if (!db) return null;
-  const status = thresholdToStatus(input.aiScore);
-  const [row] = await db
-    .insert(comments)
-    .values({
-      workspaceId: input.workspaceId,
-      entryId: input.entryId,
-      parentId: input.parentId ?? null,
-      blockId: input.blockId ?? null,
-      authorName: input.authorName.slice(0, 80),
-      authorEmail: input.authorEmail.slice(0, 200),
-      authorUserId: input.authorUserId ?? null,
-      body: input.body.slice(0, 5000),
-      status,
-      ipHash: input.ipHash ?? null,
-      userAgent: input.userAgent?.slice(0, 500) ?? null,
-      aiScore: input.aiScore,
-      aiReason: input.aiReason.slice(0, 500),
-      updatedAt: new Date(),
-    })
-    .returning();
+  // Resuelve umbrales del workspace (configurable en /admin/ajustes/seguridad/moderacion).
+  // Si no hay overrides persistidos, usa defaults (75 spam / 35 pending).
+  const thresholds = await getModerationThresholds(input.workspaceId);
+  const status = thresholdToStatus(input.aiScore, thresholds);
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(comments, {
+    id,
+    workspaceId: input.workspaceId,
+    entryId: input.entryId,
+    parentId: input.parentId ?? null,
+    blockId: input.blockId ?? null,
+    authorName: input.authorName.slice(0, 80),
+    authorEmail: input.authorEmail.slice(0, 200),
+    authorUserId: input.authorUserId ?? null,
+    body: input.body.slice(0, 5000),
+    status,
+    ipHash: input.ipHash ?? null,
+    userAgent: input.userAgent?.slice(0, 500) ?? null,
+    aiScore: input.aiScore,
+    aiReason: input.aiReason.slice(0, 500),
+    updatedAt: new Date(),
+  })) as Comment;
   if (row) {
     emitAsync({
       workspaceId: input.workspaceId,
@@ -171,13 +174,14 @@ export async function setStatus(input: {
 }): Promise<number> {
   if (!db) return 0;
   if (input.ids.length === 0) return 0;
-  const r = await db
-    .update(comments)
-    .set({ status: input.status, updatedAt: new Date() })
-    .where(
-      and(eq(comments.workspaceId, input.workspaceId), sql`${comments.id} = ANY(${input.ids})`),
-    )
-    .returning({ id: comments.id });
+  // Pattern C cross-dialect: SELECT-then-UPDATE para obtener ids afectados.
+  const where = and(
+    eq(comments.workspaceId, input.workspaceId),
+    sql`${comments.id} = ANY(${input.ids})`,
+  )!;
+  const matched = await db.select({ id: comments.id }).from(comments).where(where);
+  if (matched.length === 0) return 0;
+  await db.update(comments).set({ status: input.status, updatedAt: new Date() }).where(where);
   // Webhook por estado
   const event =
     input.status === "approved"
@@ -186,11 +190,11 @@ export async function setStatus(input: {
         ? "comment.spam"
         : null;
   if (event) {
-    for (const { id } of r) {
+    for (const { id } of matched) {
       emitAsync({ workspaceId: input.workspaceId, event, payload: { id, status: input.status } });
     }
   }
-  return r.length;
+  return matched.length;
 }
 
 export async function deleteComments(input: {
@@ -199,13 +203,10 @@ export async function deleteComments(input: {
 }): Promise<number> {
   if (!db) return 0;
   if (input.ids.length === 0) return 0;
-  const r = await db
-    .delete(comments)
-    .where(
-      and(eq(comments.workspaceId, input.workspaceId), sql`${comments.id} = ANY(${input.ids})`),
-    )
-    .returning({ id: comments.id });
-  return r.length;
+  return await deleteReturningCount(
+    comments,
+    and(eq(comments.workspaceId, input.workspaceId), sql`${comments.id} = ANY(${input.ids})`)!,
+  );
 }
 
 /**
@@ -233,6 +234,8 @@ export async function getEntryForComment(
         eq(entries.workspaceId, workspaceId),
         eq(entries.slug, slug),
         eq(entries.status, "published"),
+        // F9b: el formulario público de comentarios sólo se enlaza a entries de main.
+        isNull(entries.branchId),
       ),
     )
     .limit(1);

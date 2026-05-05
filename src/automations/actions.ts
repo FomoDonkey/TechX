@@ -8,6 +8,7 @@
 
 import { chat } from "@/ai/provider";
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { collections, comments, entries, subscribers } from "@/db/schema";
 import { sendEmail } from "@/lib/email";
 import { slugify } from "@/lib/slug";
@@ -187,18 +188,18 @@ async function execDbEntryCreate(
     )
     .limit(1);
   if (!coll) throw new Error(`Colección no encontrada: ${step.collectionSlug}`);
-  const [row] = await db
-    .insert(entries)
-    .values({
-      workspaceId: ctx.workspaceId,
-      collectionId: coll.id,
-      title: step.title,
-      slug: slugify(step.title) || `entry-${Date.now()}`,
-      bodyText: step.bodyText ?? null,
-      status: step.status ?? "draft",
-      fields: step.fields ?? null,
-    })
-    .returning({ id: entries.id, slug: entries.slug });
+  const id = crypto.randomUUID();
+  const fullRow = (await insertReturning(entries, {
+    id,
+    workspaceId: ctx.workspaceId,
+    collectionId: coll.id,
+    title: step.title,
+    slug: slugify(step.title) || `entry-${Date.now()}`,
+    bodyText: step.bodyText ?? null,
+    status: step.status ?? "draft",
+    fields: step.fields ?? null,
+  })) as typeof entries.$inferSelect;
+  const row = { id: fullRow.id, slug: fullRow.slug };
   return { output: row };
 }
 
@@ -207,11 +208,15 @@ async function execDbEntryUpdate(
   ctx: ActionContext,
 ): Promise<ActionResult> {
   if (!db) throw new Error("DB no disponible");
-  const [row] = await db
+  await db
     .update(entries)
     .set(step.patch as Partial<typeof entries.$inferInsert>)
+    .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, step.entryId)));
+  const [row] = await db
+    .select({ id: entries.id })
+    .from(entries)
     .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, step.entryId)))
-    .returning({ id: entries.id });
+    .limit(1);
   if (!row) throw new Error("Entrada no encontrada");
   return { output: { id: row.id } };
 }
@@ -222,18 +227,38 @@ async function execDbSubscriberAdd(
 ): Promise<ActionResult> {
   if (!db) throw new Error("DB no disponible");
   if (!step.email.includes("@")) throw new Error("Email inválido");
-  const inserted = await db
-    .insert(subscribers)
-    .values({
+  const email = step.email.toLowerCase();
+  // Comprobamos si ya existe (por unique (workspaceId, email)). Sustituye al
+  // `onConflictDoNothing.returning()` Postgres-only.
+  const existing = await db
+    .select({ id: subscribers.id })
+    .from(subscribers)
+    .where(and(eq(subscribers.workspaceId, ctx.workspaceId), eq(subscribers.email, email)))
+    .limit(1);
+  if (existing[0]) {
+    return { output: { id: existing[0].id, created: false } };
+  }
+  try {
+    const id = crypto.randomUUID();
+    await db.insert(subscribers).values({
+      id,
       workspaceId: ctx.workspaceId,
-      email: step.email.toLowerCase(),
+      email,
       name: step.name_field ?? null,
       tags: step.tags ?? null,
       source: "automation",
-    })
-    .onConflictDoNothing()
-    .returning({ id: subscribers.id });
-  return { output: { id: inserted[0]?.id ?? null, created: inserted.length > 0 } };
+    });
+    return { output: { id, created: true } };
+  } catch {
+    // Race: otro proceso insertó entre nuestro SELECT y el INSERT (unique
+    // violation). Re-leemos para devolver el id ganador.
+    const after = await db
+      .select({ id: subscribers.id })
+      .from(subscribers)
+      .where(and(eq(subscribers.workspaceId, ctx.workspaceId), eq(subscribers.email, email)))
+      .limit(1);
+    return { output: { id: after[0]?.id ?? null, created: false } };
+  }
 }
 
 async function execDbCommentCreate(
@@ -241,17 +266,17 @@ async function execDbCommentCreate(
   ctx: ActionContext,
 ): Promise<ActionResult> {
   if (!db) throw new Error("DB no disponible");
-  const [row] = await db
-    .insert(comments)
-    .values({
-      workspaceId: ctx.workspaceId,
-      entryId: step.entryId,
-      authorName: step.authorName,
-      authorEmail: step.authorEmail,
-      body: step.body,
-      status: "pending",
-    })
-    .returning({ id: comments.id });
+  const id = crypto.randomUUID();
+  const fullRow = (await insertReturning(comments, {
+    id,
+    workspaceId: ctx.workspaceId,
+    entryId: step.entryId,
+    authorName: step.authorName,
+    authorEmail: step.authorEmail,
+    body: step.body,
+    status: "pending",
+  })) as typeof comments.$inferSelect;
+  const row = { id: fullRow.id };
   return { output: row };
 }
 

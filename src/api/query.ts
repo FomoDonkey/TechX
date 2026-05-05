@@ -10,7 +10,6 @@ import {
   eq,
   gt,
   gte,
-  ilike,
   inArray,
   lt,
   lte,
@@ -18,6 +17,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
+import { iLike as ilike } from "@/db/dialect";
 
 export type FilterOp = "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "contains";
 

@@ -1,5 +1,6 @@
 import { getCurrentUser } from "@/auth/server";
 import { ALLOWED_MIME, MAX_UPLOAD_BYTES, ingestUpload } from "@/lib/media";
+import { httpUrlSchema } from "@/lib/safe-url";
 import { safePublicFetch } from "@/lib/ssrf";
 import { isUuid } from "@/lib/uuid";
 import { requireWorkspace } from "@/lib/workspace";
@@ -10,7 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const Body = z.object({
-  url: z.string().url(),
+  url: httpUrlSchema(),
   folderId: z.string().nullable().optional(),
   filename: z.string().optional(),
 });

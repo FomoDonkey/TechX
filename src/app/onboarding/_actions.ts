@@ -94,20 +94,25 @@ export async function createSiteFromOnboarding(raw: unknown) {
     const candidate = attempt === 0 ? baseSlug : withSuffix(baseSlug, attempt + 1);
     try {
       const created = await db.transaction(async (tx) => {
-        const [ws] = await tx
-          .insert(workspaces)
-          .values({
-            slug: candidate,
-            name: input.brand.name,
-            branding: {
-              colors: { primary: input.brand.palette.primary, accent: input.brand.palette.accent },
-              font: input.brand.font,
-              voice: input.brand.voice ?? "cercano",
-            },
-            defaultLocale: "es",
-            locales: ["es"],
-          })
-          .returning();
+        // IDs app-side para compatibilidad con MySQL (no soporta RETURNING).
+        const wsId = crypto.randomUUID();
+        const postsCollId = crypto.randomUUID();
+        const pagesCollId = crypto.randomUUID();
+        const taxId = crypto.randomUUID();
+
+        await tx.insert(workspaces).values({
+          id: wsId,
+          slug: candidate,
+          name: input.brand.name,
+          branding: {
+            colors: { primary: input.brand.palette.primary, accent: input.brand.palette.accent },
+            font: input.brand.font,
+            voice: input.brand.voice ?? "cercano",
+          },
+          defaultLocale: "es",
+          locales: ["es"],
+        });
+        const [ws] = await tx.select().from(workspaces).where(eq(workspaces.id, wsId)).limit(1);
         if (!ws) throw new Error("No se pudo crear el workspace");
 
         await tx.insert(members).values({
@@ -116,38 +121,45 @@ export async function createSiteFromOnboarding(raw: unknown) {
           role: "owner",
         });
 
+        await tx.insert(collections).values([
+          {
+            id: postsCollId,
+            workspaceId: ws.id,
+            name: "Posts",
+            slug: "posts",
+            icon: "newspaper",
+            isBuiltin: true,
+            description: "Entradas del blog",
+          },
+          {
+            id: pagesCollId,
+            workspaceId: ws.id,
+            name: "Páginas",
+            slug: "pages",
+            icon: "file-text",
+            isBuiltin: true,
+            description: "Páginas estáticas",
+          },
+        ]);
         const [postsCollection] = await tx
-          .insert(collections)
-          .values([
-            {
-              workspaceId: ws.id,
-              name: "Posts",
-              slug: "posts",
-              icon: "newspaper",
-              isBuiltin: true,
-              description: "Entradas del blog",
-            },
-            {
-              workspaceId: ws.id,
-              name: "Páginas",
-              slug: "pages",
-              icon: "file-text",
-              isBuiltin: true,
-              description: "Páginas estáticas",
-            },
-          ])
-          .returning();
+          .select()
+          .from(collections)
+          .where(eq(collections.id, postsCollId))
+          .limit(1);
         if (!postsCollection) throw new Error("No se pudo crear la colección");
 
+        await tx.insert(taxonomies).values({
+          id: taxId,
+          workspaceId: ws.id,
+          name: "Categorías",
+          slug: "categorias",
+          type: "category",
+        });
         const [taxonomy] = await tx
-          .insert(taxonomies)
-          .values({
-            workspaceId: ws.id,
-            name: "Categorías",
-            slug: "categorias",
-            type: "category",
-          })
-          .returning();
+          .select()
+          .from(taxonomies)
+          .where(eq(taxonomies.id, taxId))
+          .limit(1);
 
         if (taxonomy && input.categories.length > 0) {
           await tx.insert(terms).values(

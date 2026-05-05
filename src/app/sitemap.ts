@@ -11,7 +11,7 @@ import {
 } from "@/db/schema";
 import { env } from "@/env";
 import { POSTS_SLUG } from "@/lib/entries";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { MetadataRoute } from "next";
 
 export const revalidate = 3600;
@@ -56,6 +56,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
             eq(entries.workspaceId, workspace.id),
             eq(collections.slug, POSTS_SLUG),
             eq(entries.status, "published"),
+            // F9b: el sitemap público nunca expone forks de branches.
+            isNull(entries.branchId),
           ),
         )
         .orderBy(desc(entries.publishedAt))

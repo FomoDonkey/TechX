@@ -1,5 +1,6 @@
 import { scoreComment } from "@/ai/moderation";
 import { env } from "@/env";
+import { verifyAntiBot } from "@/lib/anti-bot";
 import { createComment, getEntryForComment, hashIp } from "@/lib/comments";
 import { getDefaultPublicWorkspace } from "@/lib/entries";
 import { revalidatePath } from "next/cache";
@@ -17,6 +18,8 @@ const Body = z.object({
   body: z.string().min(2).max(5000),
   /** Honeypot — debe venir vacío. Cualquier valor → spam silencioso. */
   hp: z.string().optional(),
+  /** Token captcha (Turnstile/hCaptcha) si el sitio lo configura. Opcional. */
+  csm_captcha: z.string().optional(),
 });
 
 export async function POST(req: Request) {
@@ -40,6 +43,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, status: "spam" });
   }
 
+  // Anti-bot adicional (Turnstile/hCaptcha/BotID si configurados).
+  const ip0 =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    req.headers.get("x-real-ip") ??
+    null;
+  const antiBot = await verifyAntiBot({ token: data.csm_captcha ?? null, ip: ip0 });
+  if (!antiBot.ok) {
+    // missing_token + provider activo → 200 silencioso (igual que honeypot, no
+    // delatamos al spammer). verify_failed → 403 explícito (humano con token
+    // caducado merece feedback).
+    if (antiBot.reason === "missing_token") {
+      return NextResponse.json({ ok: true, status: "spam" });
+    }
+    return NextResponse.json(
+      { ok: false, error: "captcha_failed", provider: antiBot.provider },
+      { status: 403 },
+    );
+  }
+
   // TODO(custom-domains): cuando F5+ resuelva workspace por host, sustituir esto.
   const ws = await getDefaultPublicWorkspace();
   if (!ws) {
@@ -57,10 +79,6 @@ export async function POST(req: Request) {
   // Score IA + heurística
   const score = await scoreComment({ body: data.body, authorName: data.authorName });
 
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    null;
   const ua = req.headers.get("user-agent") ?? undefined;
 
   const created = await createComment({
@@ -70,7 +88,7 @@ export async function POST(req: Request) {
     authorName: data.authorName,
     authorEmail: data.authorEmail,
     body: data.body,
-    ipHash: hashIp(ip, env.AUTH_SECRET),
+    ipHash: hashIp(ip0, env.AUTH_SECRET),
     userAgent: ua,
     aiScore: score.score,
     aiReason: score.reason,

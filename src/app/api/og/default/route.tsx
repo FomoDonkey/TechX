@@ -4,7 +4,10 @@ import { renderOg } from "@/lib/og";
 import { resolveActiveTheme } from "@/themes/active";
 
 export const runtime = "nodejs";
-export const revalidate = 3600;
+// Depende de la DB y del tema activo; no permitimos prerender estático
+// (Satori no parsea `oklch(...)` en build sin polyfill, además el contenido
+// es por-workspace).
+export const dynamic = "force-dynamic";
 
 const FALLBACK_TEMPLATE = {
   background: { kind: "gradient" as const, from: "#0c0a14", to: "#1a1228", angle: 135 },

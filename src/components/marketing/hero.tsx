@@ -8,7 +8,7 @@ export function Hero() {
     <section className="relative mx-auto flex min-h-[92vh] max-w-6xl flex-col items-center justify-center px-4 text-center">
       <Badge variant="gradient" className="mb-6 gap-1.5 px-4 py-1.5 text-xs">
         <Sparkles className="size-3" />
-        Versión 0.1 · open source · gratis para siempre
+        13/16 fases · realtime collab + MCP + agente IA · open source
       </Badge>
 
       <h1 className="text-balance font-display text-5xl font-bold leading-[1.05] tracking-tight md:text-7xl lg:text-8xl">
@@ -38,10 +38,10 @@ export function Hero() {
 
       <p className="mt-8 max-w-2xl text-balance text-lg text-muted-foreground md:text-xl">
         Publica como en <strong className="text-foreground">Notion</strong>. Diseña como en{" "}
-        <strong className="text-foreground">Framer</strong>. Escala como{" "}
-        <strong className="text-foreground">Vercel</strong>. Mide como{" "}
-        <strong className="text-foreground">Linear</strong>. Un CMS open-source, AI-native,
-        multi-tenant, headless-first. En español, gratis y espectacular.
+        <strong className="text-foreground">Framer</strong>. Colabora como en{" "}
+        <strong className="text-foreground">Linear</strong>. Despliega como en{" "}
+        <strong className="text-foreground">Vercel</strong>. CMS open-source, AI-native con MCP
+        server propio, multi-tenant y headless-first. En español, gratis, espectacular.
       </p>
 
       <div className="mt-10 flex flex-col gap-3 sm:flex-row">

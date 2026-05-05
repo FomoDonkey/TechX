@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import { media, mediaFolders } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import {
@@ -11,7 +12,7 @@ import {
 import type { MediaKind, MediaRow } from "@/lib/media-types";
 import { isUuid } from "@/lib/uuid";
 import { currentStorage } from "@/storage";
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 export { mediaKind } from "@/lib/media-types";
@@ -134,7 +135,8 @@ export async function ingestUpload(input: IngestInput): Promise<IngestedAsset> {
 
   let row: MediaRow | undefined;
   try {
-    [row] = await db.insert(media).values(values).returning();
+    const id = crypto.randomUUID();
+    row = (await insertReturning(media, { id, ...values })) as MediaRow;
   } catch (err) {
     await rollback();
     throw err;
@@ -258,19 +260,19 @@ export async function deleteMedia(workspaceId: string, ids: string[]): Promise<n
     }),
   );
 
-  const deleted = await db
-    .delete(media)
-    .where(and(eq(media.workspaceId, workspaceId), inArray(media.id, valid)))
-    .returning({ id: media.id });
+  const deleted = await deleteReturningCount(
+    media,
+    and(eq(media.workspaceId, workspaceId), inArray(media.id, valid))!,
+  );
 
   await logActivity({
     workspaceId,
     action: "media.delete",
     targetType: "media",
-    meta: { count: deleted.length },
+    meta: { count: deleted },
   });
 
-  return deleted.length;
+  return deleted;
 }
 
 export type UpdateMediaPatch = {
@@ -297,11 +299,16 @@ export async function updateMedia(
   if (patch.focalY !== undefined) next.focalY = patch.focalY;
   if (patch.tagsManual !== undefined) next.tagsManual = patch.tagsManual;
   if (Object.keys(next).length === 0) return getMediaById(workspaceId, id);
-  const [row] = await db
+  // UPDATE + SELECT post-update (MySQL no soporta UPDATE...RETURNING).
+  await db
     .update(media)
     .set(next)
+    .where(and(eq(media.id, id), eq(media.workspaceId, workspaceId)));
+  const [row] = await db
+    .select()
+    .from(media)
     .where(and(eq(media.id, id), eq(media.workspaceId, workspaceId)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
@@ -333,10 +340,13 @@ export async function createFolder(
     .limit(1);
   if (dup[0]) throw new Error("Ya existe una carpeta con ese nombre");
 
-  const [row] = await db
-    .insert(mediaFolders)
-    .values({ workspaceId, name: cleanName, parentId })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(mediaFolders, {
+    id,
+    workspaceId,
+    name: cleanName,
+    parentId,
+  })) as typeof mediaFolders.$inferSelect;
   if (!row) throw new Error("No se pudo crear la carpeta");
   return row;
 }
@@ -349,9 +359,9 @@ export async function deleteFolder(workspaceId: string, id: string): Promise<boo
     .update(media)
     .set({ folderId: null })
     .where(and(eq(media.workspaceId, workspaceId), eq(media.folderId, id)));
-  const deleted = await db
-    .delete(mediaFolders)
-    .where(and(eq(mediaFolders.workspaceId, workspaceId), eq(mediaFolders.id, id)))
-    .returning({ id: mediaFolders.id });
-  return deleted.length > 0;
+  const deleted = await deleteReturningCount(
+    mediaFolders,
+    and(eq(mediaFolders.workspaceId, workspaceId), eq(mediaFolders.id, id))!,
+  );
+  return deleted > 0;
 }

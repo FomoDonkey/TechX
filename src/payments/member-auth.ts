@@ -15,6 +15,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@/db/client";
+import { atomicClaim, deleteReturningCount } from "@/db/dialect";
 import { memberMagicLinks, memberSessions } from "@/db/schema";
 import { env } from "@/env";
 import { and, eq, gte, sql } from "drizzle-orm";
@@ -105,23 +106,23 @@ export async function consumeMagicLink(token: string): Promise<{
 
   // Atomic: claim row only if not used and not expired.
   const now = new Date();
-  const claimed = await db
-    .update(memberMagicLinks)
-    .set({ usedAt: now })
-    .where(
-      and(
-        eq(memberMagicLinks.tokenHash, tokenHash),
-        sql`${memberMagicLinks.usedAt} IS NULL`,
-        gte(memberMagicLinks.expiresAt, now),
-      ),
-    )
-    .returning({
-      workspaceId: memberMagicLinks.workspaceId,
-      email: memberMagicLinks.email,
-      redirectTo: memberMagicLinks.redirectTo,
-    });
-
-  return claimed[0] ?? null;
+  const claimed = await atomicClaim<{
+    workspaceId: string;
+    email: string;
+    redirectTo: string | null;
+    usedAt: Date | null;
+    expiresAt: Date;
+  }>(memberMagicLinks, {
+    where: eq(memberMagicLinks.tokenHash, tokenHash),
+    precondition: (row) => row.usedAt === null && row.expiresAt.getTime() >= now.getTime(),
+    set: { usedAt: now },
+  });
+  if (!claimed) return null;
+  return {
+    workspaceId: claimed.workspaceId,
+    email: claimed.email,
+    redirectTo: claimed.redirectTo,
+  };
 }
 
 // ============================================================
@@ -258,15 +259,13 @@ export async function purgeExpiredMemberAuth(): Promise<{ sessions: number; magi
   if (!db) return { sessions: 0, magic: 0 };
   const now = new Date();
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-  const sessions = await db
-    .delete(memberSessions)
-    .where(sql`${memberSessions.expiresAt} < ${now}`)
-    .returning({ id: memberSessions.id });
-  const magic = await db
-    .delete(memberMagicLinks)
-    .where(
-      sql`${memberMagicLinks.expiresAt} < ${now} OR (${memberMagicLinks.usedAt} IS NOT NULL AND ${memberMagicLinks.usedAt} < ${oneHourAgo})`,
-    )
-    .returning({ id: memberMagicLinks.id });
-  return { sessions: sessions.length, magic: magic.length };
+  const sessions = await deleteReturningCount(
+    memberSessions,
+    sql`${memberSessions.expiresAt} < ${now}`,
+  );
+  const magic = await deleteReturningCount(
+    memberMagicLinks,
+    sql`${memberMagicLinks.expiresAt} < ${now} OR (${memberMagicLinks.usedAt} IS NOT NULL AND ${memberMagicLinks.usedAt} < ${oneHourAgo})`,
+  );
+  return { sessions, magic };
 }

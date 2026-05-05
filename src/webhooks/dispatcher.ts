@@ -12,6 +12,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { db } from "@/db/client";
+import { deleteReturningCount } from "@/db/dialect";
 import { webhookDeliveries, webhooks } from "@/db/schema";
 import { safePublicFetch } from "@/lib/ssrf";
 import { RETRY_DELAYS_MS, type WebhookEvent } from "@/webhooks/events";
@@ -362,18 +363,15 @@ export async function testWebhook(input: {
 export async function pruneOldDeliveries(daysOld = 30) {
   if (!db) return 0;
   const cutoff = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
-  const result = await db
-    .delete(webhookDeliveries)
-    .where(
-      and(
-        sql`${webhookDeliveries.createdAt} < ${cutoff}`,
-        or(
-          eq(webhookDeliveries.status, "success"),
-          eq(webhookDeliveries.status, "failed"),
-          eq(webhookDeliveries.status, "dropped"),
-        ),
+  return await deleteReturningCount(
+    webhookDeliveries,
+    and(
+      sql`${webhookDeliveries.createdAt} < ${cutoff}`,
+      or(
+        eq(webhookDeliveries.status, "success"),
+        eq(webhookDeliveries.status, "failed"),
+        eq(webhookDeliveries.status, "dropped"),
       ),
-    )
-    .returning({ id: webhookDeliveries.id });
-  return result.length;
+    )!,
+  );
 }

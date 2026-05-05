@@ -1,4 +1,5 @@
 import "server-only";
+import { AbTrackingScript } from "@/ab/client-script";
 import { resolveActiveTheme } from "@/themes/active";
 import { themeCss, themeFontsLink } from "@/themes/css";
 import type { ThemeSpec } from "@/themes/types";
@@ -22,8 +23,14 @@ interface ThemeShellProps {
 export async function ThemeShell({ workspaceId, children, override }: ThemeShellProps) {
   const spec = override ?? (workspaceId ? (await resolveActiveTheme(workspaceId)).spec : null);
   if (!spec) {
-    // No workspace: render naked
-    return <>{children}</>;
+    // No workspace: render naked but still inject A/B tracking script for the
+    // marketing landing (so admin demos work end-to-end).
+    return (
+      <>
+        <AbTrackingScript />
+        {children}
+      </>
+    );
   }
   const css = themeCss(spec);
   const fontsHref = themeFontsLink(spec);
@@ -44,6 +51,7 @@ export async function ThemeShell({ workspaceId, children, override }: ThemeShell
       >
         {children}
       </div>
+      <AbTrackingScript />
     </>
   );
 }

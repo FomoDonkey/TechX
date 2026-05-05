@@ -29,8 +29,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { createInterface } from "node:readline/promises";
 
 const VERSION = "0.1.0";
 const RC_PATH = join(homedir(), ".csmrc");
@@ -183,6 +183,11 @@ async function cmdHelp() {
     ["gen sdk [--out file]", "Genera cliente JS desde OpenAPI (CommonJS)"],
     ["gen types [--out file]", "Genera tipos TypeScript desde OpenAPI"],
     ["types graphql [--out file]", "Descarga el schema GraphQL como SDL"],
+    ["mcp serve", "Lanza el MCP server de CSM (stdio)"],
+    [
+      "mcp install [--client=claude-desktop|cursor|vscode]",
+      "Configura el cliente MCP automáticamente",
+    ],
     ["version", "Imprime la versión"],
     ["help", "Esta ayuda"],
   ];
@@ -203,10 +208,10 @@ async function cmdLogin(args) {
   console.log("");
   info(`Configurando profile "${profileName}"`);
   const baseUrl = await prompt(
-    `Base URL del API (incluye /api/v1) [https://csm.example/api/v1]: `,
+    "Base URL del API (incluye /api/v1) [https://csm.example/api/v1]: ",
     { default: "https://csm.example/api/v1" },
   );
-  const apiKey = await prompt(`API key (csm_live_… o csm_test_…): `);
+  const apiKey = await prompt("API key (csm_live_… o csm_test_…): ");
   if (!apiKey) fail("API key es obligatoria");
 
   // Validar la key con un /me
@@ -277,7 +282,9 @@ async function cmdPushSchema(args) {
   const profile = getProfile(args.flags.profile);
   const data = JSON.parse(readFileSync(file, "utf8"));
   if (!Array.isArray(data)) fail("El JSON debe ser un array de colecciones");
-  info(`F7c v0.1: push schema requiere endpoints PATCH /collections (próximo). Por ahora, ejecuta el push manualmente desde /admin/colecciones.`);
+  info(
+    "F7c v0.1: push schema requiere endpoints PATCH /collections (próximo). Por ahora, ejecuta el push manualmente desde /admin/colecciones.",
+  );
   console.log(paint("dim", `(payload validado: ${data.length} colecciones)`));
 }
 
@@ -285,7 +292,9 @@ async function cmdExport(args) {
   const type = args.positional[1] ?? "entries";
   const profile = getProfile(args.flags.profile);
   const out = args.flags.out ?? `${type}.jsonl`;
-  if (!["entries", "forms", "media", "menus", "redirects", "automations", "webhooks"].includes(type)) {
+  if (
+    !["entries", "forms", "media", "menus", "redirects", "automations", "webhooks"].includes(type)
+  ) {
     fail(`Tipo no soportado: ${type}`);
   }
   info(`Exportando ${type} → ${out}`);
@@ -316,7 +325,10 @@ async function cmdImport(args) {
   const profile = getProfile(args.flags.profile);
   const raw = readFileSync(file, "utf8");
   const items = file.endsWith(".jsonl")
-    ? raw.split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    ? raw
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
     : (() => {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [parsed];
@@ -362,7 +374,7 @@ async function cmdGenTypes(args) {
   const names = Object.keys(schemas);
   const lines = [
     `// Auto-generado por csm gen types a partir de OpenAPI ${spec.info?.version ?? ""}`,
-    `// Para tipos detallados, usa @csm/sdk (que ya está tipado).`,
+    "// Para tipos detallados, usa @csm/sdk (que ya está tipado).",
     "",
   ];
   for (const name of names) {
@@ -481,8 +493,102 @@ node index.mjs
 \`\`\`
 `,
   );
-  ok(`Proyecto creado. Siguiente paso:`);
+  ok("Proyecto creado. Siguiente paso:");
   console.log(paint("dim", `  cd ${dirName} && cp .env.example .env && node index.mjs`));
+}
+
+// ============================================================
+// MCP commands — `csm mcp serve` y `csm mcp install`
+// ============================================================
+async function cmdMcpServe() {
+  const { spawn } = await import("node:child_process");
+  const { dirname, join, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = resolve(here, "..");
+  const tsxBin =
+    process.platform === "win32"
+      ? join(root, "node_modules", ".bin", "tsx.cmd")
+      : join(root, "node_modules", ".bin", "tsx");
+  info("Lanzando CSM MCP server (stdio)…");
+  const child = spawn(tsxBin, [join(root, "src", "mcp", "cli.ts")], {
+    stdio: "inherit",
+    env: process.env,
+    shell: process.platform === "win32",
+    cwd: root,
+  });
+  child.on("exit", (code) => process.exit(code ?? 0));
+}
+
+async function cmdMcpInstall(args) {
+  const client = (args.flags.client || "claude-desktop").toLowerCase();
+  const apiKey =
+    args.flags.key ||
+    process.env.CSM_API_KEY ||
+    (await prompt("Pega tu API key (csm_live_… o csm_test_…)"));
+  if (!apiKey) fail("Necesitas una API key. Crea una en /admin/api-keys.");
+  const databaseUrl =
+    args.flags.db ||
+    process.env.DATABASE_URL ||
+    (await prompt("DATABASE_URL del workspace (Postgres)"));
+  if (!databaseUrl) fail("Necesitas DATABASE_URL.");
+
+  const { dirname, join, resolve } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { existsSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { homedir } = await import("node:os");
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = resolve(here, "..");
+  const mcpEntry = join(root, "bin", "csm-mcp.mjs");
+
+  let configPath;
+  if (client === "claude-desktop") {
+    if (process.platform === "darwin") {
+      configPath = join(
+        homedir(),
+        "Library",
+        "Application Support",
+        "Claude",
+        "claude_desktop_config.json",
+      );
+    } else if (process.platform === "win32") {
+      const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+      configPath = join(appData, "Claude", "claude_desktop_config.json");
+    } else {
+      configPath = join(homedir(), ".config", "Claude", "claude_desktop_config.json");
+    }
+  } else if (client === "cursor") {
+    configPath = join(homedir(), ".cursor", "mcp.json");
+  } else if (client === "vscode") {
+    configPath = join(homedir(), ".vscode", "mcp.json");
+  } else {
+    fail(`Cliente "${client}" no soportado. Opciones: claude-desktop, cursor, vscode.`);
+  }
+
+  mkdirSync(dirname(configPath), { recursive: true });
+  let config = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch {
+      info(`Config existente en ${configPath} no es JSON válido — se sobreescribe.`);
+    }
+  }
+  config.mcpServers = config.mcpServers || {};
+  config.mcpServers.csm = {
+    command: "node",
+    args: [mcpEntry],
+    env: {
+      DATABASE_URL: databaseUrl,
+      CSM_API_KEY: apiKey,
+    },
+  };
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  ok(`Configuración MCP escrita en:\n  ${configPath}`);
+  info(
+    'Reinicia el cliente para que detecte el servidor. Luego, prueba: "Lista mis posts en CSM".',
+  );
 }
 
 // ============================================================
@@ -521,6 +627,14 @@ const handlers = {
   types: async (a) => {
     if (a.positional[1] === "graphql") return cmdTypesGraphql(a);
     fail(`Subcomando "types ${a.positional[1] ?? ""}" no reconocido`);
+  },
+  mcp: async (a) => {
+    const sub = a.positional[1];
+    if (sub === "serve") return cmdMcpServe();
+    if (sub === "install") return cmdMcpInstall(a);
+    fail(
+      `Subcomando "mcp ${sub ?? ""}" no reconocido. Usa: \`csm mcp serve\` o \`csm mcp install --client=claude-desktop\`.`,
+    );
   },
 };
 

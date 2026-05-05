@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listPages } from "@/lib/pages";
 import { requireWorkspace } from "@/lib/workspace";
-import { Eye, FileText, Home, Pencil, Plus } from "lucide-react";
+import { Eye, FileText, Home, Pencil, Plus, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 export const metadata = { title: "Páginas · CSM" };
@@ -43,27 +43,42 @@ export default async function PagesPage({
           </p>
         </div>
 
-        <details className="relative">
-          <summary className="inline-flex h-10 cursor-pointer list-none items-center gap-2 rounded-xl bg-foreground px-4 text-sm font-medium text-background transition-opacity hover:opacity-90 [&::-webkit-details-marker]:hidden">
-            <Plus className="size-4" /> Nueva página
-          </summary>
-          <form
-            action={createPageFormAction}
-            className="absolute right-0 z-10 mt-2 w-80 space-y-3 rounded-2xl border bg-popover p-4 shadow-2xl"
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin/plantillas"
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-primary/40 bg-primary/10 px-4 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
           >
-            <div className="space-y-1.5">
-              <Label htmlFor="np-title">Título</Label>
-              <Input id="np-title" name="title" placeholder="Mi nueva página" required />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="np-path">Ruta (opcional)</Label>
-              <Input id="np-path" name="path" placeholder="/sobre-nosotros" />
-            </div>
-            <Button type="submit" variant="gradient" className="w-full">
-              Crear página
-            </Button>
-          </form>
-        </details>
+            <Sparkles className="size-4" /> Empezar desde plantilla
+          </Link>
+          <details className="relative">
+            <summary className="inline-flex h-10 cursor-pointer list-none items-center gap-2 rounded-xl bg-foreground px-4 text-sm font-medium text-background transition-opacity hover:opacity-90 [&::-webkit-details-marker]:hidden">
+              <Plus className="size-4" /> Nueva página
+            </summary>
+            <form
+              action={createPageFormAction}
+              className="absolute right-0 z-10 mt-2 w-80 space-y-3 rounded-2xl border bg-popover p-4 shadow-2xl"
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="np-title">Título</Label>
+                <Input id="np-title" name="title" placeholder="Mi nueva página" required />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="np-path">Ruta (opcional)</Label>
+                <Input id="np-path" name="path" placeholder="/sobre-nosotros" />
+              </div>
+              <Button type="submit" variant="gradient" className="w-full">
+                Crear en blanco
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                ¿Prefieres un diseño listo? Prueba las{" "}
+                <Link href="/admin/plantillas" className="text-primary hover:underline">
+                  plantillas
+                </Link>
+                .
+              </p>
+            </form>
+          </details>
+        </div>
       </header>
 
       <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-border/60 bg-card/30 p-1">

@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "@/db/client";
 import { type User, collections, entries, members, users } from "@/db/schema";
 import { POSTS_SLUG } from "@/lib/entries";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 const HANDLE_RE = /^[a-z0-9_-]+$/;
 
@@ -63,6 +63,8 @@ export async function getAuthorByHandle(
         eq(collections.slug, POSTS_SLUG),
         eq(entries.status, "published"),
         eq(entries.authorId, author.id),
+        // F9b: el archivo público de autor no muestra forks.
+        isNull(entries.branchId),
       ),
     )
     .orderBy(desc(entries.publishedAt))

@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Form, forms, media, submissions } from "@/db/schema";
 import { sendEmail } from "@/lib/email";
 import { safePublicFetch } from "@/lib/ssrf";
@@ -142,26 +143,25 @@ export async function processSubmission(input: SubmitInput): Promise<SubmitOutpu
 
   let inserted: typeof submissions.$inferSelect | null = null;
   try {
-    const [row] = await db
-      .insert(submissions)
-      .values({
-        workspaceId: input.form.workspaceId,
-        formId: input.form.id,
-        formVersion: input.form.version,
-        data: cleanData,
-        attachments: attachmentIds,
-        status: initialStatus,
-        spamScore: Math.min(score.score, 100),
-        spamReasons: score.reasons.length > 0 ? score.reasons : null,
-        contentHash: hash,
-        ipHash: settings.storeIp === false ? null : input.ipHash,
-        ua: input.userAgent ?? null,
-        referer: input.referer ?? null,
-        country: input.country ?? null,
-        source: input.utm ? { utm: input.utm } : null,
-        confirmationToken: null,
-      })
-      .returning();
+    const id = crypto.randomUUID();
+    const row = (await insertReturning(submissions, {
+      id,
+      workspaceId: input.form.workspaceId,
+      formId: input.form.id,
+      formVersion: input.form.version,
+      data: cleanData,
+      attachments: attachmentIds,
+      status: initialStatus,
+      spamScore: Math.min(score.score, 100),
+      spamReasons: score.reasons.length > 0 ? score.reasons : null,
+      contentHash: hash,
+      ipHash: settings.storeIp === false ? null : input.ipHash,
+      ua: input.userAgent ?? null,
+      referer: input.referer ?? null,
+      country: input.country ?? null,
+      source: input.utm ? { utm: input.utm } : null,
+      confirmationToken: null,
+    })) as typeof submissions.$inferSelect;
     inserted = row ?? null;
   } catch (err) {
     // Probablemente colisión del unique index (formId, contentHash) → duplicado idempotente
@@ -399,6 +399,15 @@ async function sendConfirmationEmailIfPossible(input: {
   const to = input.data[emailField.key];
   if (typeof to !== "string" || !to.includes("@")) return;
 
+  // Anti-abuse: rate-limit por (formId, hash(email)) para evitar que un
+  // atacante inunde la bandeja de una víctima con confirmaciones repetidas.
+  // Bucket independiente del IP rate-limit (un atacante puede rotar IP pero
+  // el email destino es el mismo).
+  const { consume } = await import("@/api/rate-limit");
+  const emailKey = `forms:confirm-email:${input.form.id}:${input.form.workspaceId}:${hashEmailKey(to)}`;
+  const rl = consume(emailKey, 5, 60 * 60 * 1000); // 5 confirmaciones/h por (form, email)
+  if (!rl.ok) return;
+
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const link = `${baseUrl}/api/public/forms/${input.form.slug}/confirm?token=${encodeURIComponent(input.token)}`;
   await sendEmail({
@@ -462,4 +471,10 @@ export function getDefaultRateLimits(settings: FormSettings | null | undefined) 
 
 export function hashIp(ip: string): string {
   return createHash("sha256").update(`${ip}.csm-form-salt`).digest("hex").slice(0, 32);
+}
+
+/** Hash de email normalizado para keys de rate-limit (no reversible, sólo lookup). */
+function hashEmailKey(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  return createHash("sha256").update(`${normalized}.csm-email-rl`).digest("hex").slice(0, 24);
 }

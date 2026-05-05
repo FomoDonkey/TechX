@@ -1,7 +1,7 @@
 "use server";
 
 import { db } from "@/db/client";
-import { media } from "@/db/schema";
+import { media, mediaFolders } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import {
   type UpdateMediaPatch,
@@ -78,9 +78,33 @@ const PatchInput = z.object({
   }),
 });
 
+/** Verifica que un folderId pertenece al workspace. Devuelve true si OK,
+ * o si folderId es null (root). */
+async function folderBelongsToWorkspace(
+  workspaceId: string,
+  folderId: string | null | undefined,
+): Promise<boolean> {
+  if (!folderId) return true;
+  if (!db) return false;
+  if (!isUuid(folderId)) return false;
+  const [row] = await db
+    .select({ id: mediaFolders.id })
+    .from(mediaFolders)
+    .where(and(eq(mediaFolders.workspaceId, workspaceId), eq(mediaFolders.id, folderId)))
+    .limit(1);
+  return !!row;
+}
+
 export async function updateMediaAction(input: z.infer<typeof PatchInput>) {
   const ctx = await requireWorkspace("editor");
   const parsed = PatchInput.parse(input);
+  // Anti-IDOR cross-tenant: si el patch incluye folderId, verifica que el
+  // folder pertenece al workspace del actor (sin esto, editor de wsA podía
+  // poner folderId de wsB en un media de wsA → estado inconsistente).
+  if (parsed.patch.folderId !== undefined) {
+    const ok = await folderBelongsToWorkspace(ctx.workspace.id, parsed.patch.folderId);
+    if (!ok) return { ok: false as const, error: "folder_invalid" };
+  }
   const next: UpdateMediaPatch = parsed.patch;
   const row = await updateMedia(ctx.workspace.id, parsed.id, next);
   if (!row) return { ok: false as const, error: "No encontrado" };
@@ -105,6 +129,9 @@ export async function moveMediaAction(input: z.infer<typeof MoveInput>) {
   if (!db) return { ok: false as const, error: "DB no configurada" };
   const parsed = MoveInput.parse(input);
   const target = parsed.folderId && isUuid(parsed.folderId) ? parsed.folderId : null;
+  // Anti-IDOR cross-tenant: el folder destino debe pertenecer al workspace.
+  const ok = await folderBelongsToWorkspace(ctx.workspace.id, target);
+  if (!ok) return { ok: false as const, error: "folder_invalid" };
   await db
     .update(media)
     .set({ folderId: target })

@@ -186,11 +186,15 @@ export async function updateMembershipHandler({
   if (body.status !== undefined) updates.status = body.status;
   if (body.cancelAtPeriodEnd !== undefined) updates.cancelAtPeriodEnd = body.cancelAtPeriodEnd;
 
-  const [row] = await db
+  await db
     .update(memberships)
     .set(updates)
+    .where(and(eq(memberships.workspaceId, ctx.workspaceId), eq(memberships.id, params.id)));
+  const [row] = await db
+    .select()
+    .from(memberships)
     .where(and(eq(memberships.workspaceId, ctx.workspaceId), eq(memberships.id, params.id)))
-    .returning();
+    .limit(1);
   if (!row) throw new ApiError("not_found", "Membresía no encontrada");
 
   await recordMemberEvent({

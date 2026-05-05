@@ -5,13 +5,22 @@
  * Estrategia (igual que /api/public/subscribe):
  *  1) Si llega `workspaceId` explícito y existe, usa ese.
  *  2) Resuelve por host (custom domain → workspace).
- *  3) Fallback al primer workspace (modo demo single-tenant).
+ *  3) Single-tenant fallback (`CSM_SINGLE_TENANT=true` o desarrollo): primer workspace.
+ *
+ * En multi-tenant de producción NO hacemos fallback — devolvemos null para que
+ * la ruta responda 4xx en lugar de atribuir al tenant equivocado (audit F0-F9a
+ * layer 3 detectó este vector de cross-tenant attribution).
  */
 
 import { db } from "@/db/client";
 import { type Workspace, workspaces } from "@/db/schema";
 import { resolveWorkspaceIdByHost } from "@/redirects/runtime";
 import { eq } from "drizzle-orm";
+
+function isSingleTenantMode(): boolean {
+  if (process.env.CSM_SINGLE_TENANT === "true") return true;
+  return process.env.NODE_ENV !== "production";
+}
 
 export async function resolvePublicWorkspace(
   req: Request,
@@ -37,16 +46,15 @@ export async function resolvePublicWorkspace(
     }
   }
 
-  // Fallback al primer workspace. En multi-tenant de producción esto puede
-  // atribuir checkouts/portal al tenant equivocado si el host no resuelve.
-  // Documentamos con un warn — single-tenant deployments pueden ignorarlo.
-  const [first] = await db.select().from(workspaces).orderBy(workspaces.createdAt).limit(1);
-  if (first && process.env.NODE_ENV === "production") {
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "?";
+  // Multi-tenant de producción: fail-closed. Single-tenant / dev: fallback al primero.
+  if (!isSingleTenantMode()) {
     console.warn(
-      `[resolvePublicWorkspace] Fallback al primer workspace (host="${host}" no resolvió). Configura customDomain en el workspace correcto si es multi-tenant.`,
+      `[resolvePublicWorkspace] host="${host || "?"}" no resolvió en producción multi-tenant — devolviendo null. Configura customDomain o CSM_SINGLE_TENANT=true.`,
     );
+    return null;
   }
+
+  const [first] = await db.select().from(workspaces).orderBy(workspaces.createdAt).limit(1);
   return first ?? null;
 }
 

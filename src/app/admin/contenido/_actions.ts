@@ -1,7 +1,9 @@
 "use server";
 
 import { requireUser } from "@/auth/server";
+import { createEntryInBranch, materializeForkOnEdit, resolveActiveBranch } from "@/branches";
 import { db } from "@/db/client";
+import { atomicClaimMany } from "@/db/dialect";
 import { type Entry, entries, revisions } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import {
@@ -12,11 +14,12 @@ import {
   getOrCreateBuiltinCollection,
   getRevision,
 } from "@/lib/entries";
+import { httpUrlSchema } from "@/lib/safe-url";
 import { slugify } from "@/lib/slug";
 import { requireWorkspace } from "@/lib/workspace";
 import { enqueueIndex } from "@/search/jobs";
 import { emitAsync } from "@/webhooks/dispatcher";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { revalidatePath, revalidateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -41,12 +44,26 @@ async function createPostInternal(title: string) {
   const user = await requireUser();
   const ctx = await requireWorkspace("author");
   const collection = await getOrCreateBuiltinCollection(ctx.workspace.id, POSTS_SLUG);
-  const created = await createEntry({
-    workspaceId: ctx.workspace.id,
-    collectionId: collection.id,
-    authorId: user.id,
-    title,
-  });
+  // F9b: si la branch activa no es main, crear la entry DENTRO de la branch
+  // (branchState='new'). Si es main, ruta normal.
+  const activeBranch = await resolveActiveBranch(ctx.workspace.id);
+  const created = activeBranch.isDefault
+    ? await createEntry({
+        workspaceId: ctx.workspace.id,
+        collectionId: collection.id,
+        authorId: user.id,
+        title,
+      })
+    : await createEntryInBranch({
+        workspaceId: ctx.workspace.id,
+        collectionId: collection.id,
+        branch: activeBranch,
+        authorId: user.id,
+        title: title || "Sin título",
+        slug: slugify(title) || `entrada-${Date.now().toString(36)}`,
+        body: { type: "doc", content: [{ type: "paragraph" }] },
+        locale: "es",
+      });
   revalidatePath("/admin/contenido");
   revalidatePath("/admin");
   return created;
@@ -60,12 +77,26 @@ export async function createEntryInCollectionAction(input: {
   try {
     const user = await requireUser();
     const ctx = await requireWorkspace("author");
-    const created = await createEntry({
-      workspaceId: ctx.workspace.id,
-      collectionId: input.collectionId,
-      authorId: user.id,
-      title: input.title ?? "",
-    });
+    // F9b: respeta branch activa (igual que createPostInternal).
+    const activeBranch = await resolveActiveBranch(ctx.workspace.id);
+    const title = input.title ?? "";
+    const created = activeBranch.isDefault
+      ? await createEntry({
+          workspaceId: ctx.workspace.id,
+          collectionId: input.collectionId,
+          authorId: user.id,
+          title,
+        })
+      : await createEntryInBranch({
+          workspaceId: ctx.workspace.id,
+          collectionId: input.collectionId,
+          branch: activeBranch,
+          authorId: user.id,
+          title: title || "Sin título",
+          slug: slugify(title) || `entrada-${Date.now().toString(36)}`,
+          body: { type: "doc", content: [{ type: "paragraph" }] },
+          locale: "es",
+        });
     revalidatePath("/admin/contenido");
     return { ok: true, id: created.id };
   } catch (err) {
@@ -85,6 +116,9 @@ export async function ensureSingletonEntryAction(input: {
     const user = await requireUser();
     const ctx = await requireWorkspace("author");
     if (!db) return { ok: false, error: "DB no configurada" };
+    // M4: filtrar branchId IS NULL — si la singleton tiene fork en una branch,
+    // el SELECT sin filtro puede retornar la fork (orden indeterminado de heap)
+    // y el redirect manda al editor de la fork mientras el usuario está en main.
     const existing = await db
       .select({ id: entries.id })
       .from(entries)
@@ -92,6 +126,7 @@ export async function ensureSingletonEntryAction(input: {
         and(
           eq(entries.workspaceId, ctx.workspace.id),
           eq(entries.collectionId, input.collectionId),
+          isNull(entries.branchId),
         ),
       )
       .limit(1);
@@ -147,7 +182,7 @@ const SaveSchema = z.object({
     .object({
       title: z.string().max(120).optional(),
       description: z.string().max(280).optional(),
-      ogImage: z.string().url().optional(),
+      ogImage: httpUrlSchema().optional(),
     })
     .nullable()
     .optional(),
@@ -156,7 +191,14 @@ const SaveSchema = z.object({
 
 export type SaveEntryInput = z.input<typeof SaveSchema>;
 export type SaveEntryResult =
-  | { ok: true; updatedAt: string; slug: string; revisionId: string | null }
+  | {
+      ok: true;
+      updatedAt: string;
+      slug: string;
+      revisionId: string | null;
+      /** Si el guardado materializó un COW en una branch, este es el id NUEVO. El cliente debe redirigir. */
+      forkedToId?: string;
+    }
   | { ok: false; error: string };
 
 export async function saveEntryAction(input: SaveEntryInput): Promise<SaveEntryResult> {
@@ -170,8 +212,46 @@ export async function saveEntryAction(input: SaveEntryInput): Promise<SaveEntryR
   }
   const data = parsed.data;
 
-  const current = await getEntryById(ctx.workspace.id, data.id);
+  let current = await getEntryById(ctx.workspace.id, data.id);
   if (!current) return { ok: false, error: "No encontrada" };
+
+  // F9b: si la branch activa NO es main y la entry es de main, materializar fork.
+  const activeBranch = await resolveActiveBranch(ctx.workspace.id);
+  let forkedToId: string | undefined;
+  if (!activeBranch.isDefault) {
+    if (current.branchId === null) {
+      try {
+        const fork = await materializeForkOnEdit({
+          workspaceId: ctx.workspace.id,
+          entryId: current.id,
+          branch: activeBranch,
+          actorId: user.id,
+        });
+        if (fork.id !== current.id) {
+          forkedToId = fork.id;
+          current = fork;
+        }
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "No se pudo forkear en branch",
+        };
+      }
+    } else if (current.branchId !== activeBranch.id) {
+      return {
+        ok: false,
+        error: "Esta entrada pertenece a otra branch — cambia a esa branch para editarla.",
+      };
+    }
+  } else {
+    // Branch activa es main: si la entry vive en otra branch, bloquear edición.
+    if (current.branchId !== null) {
+      return {
+        ok: false,
+        error: "Esta entrada está en una branch — cambia a esa branch para editarla.",
+      };
+    }
+  }
 
   let nextSlug = current.slug;
   if (data.slug && data.slug !== current.slug) {
@@ -208,15 +288,19 @@ export async function saveEntryAction(input: SaveEntryInput): Promise<SaveEntryR
   let revisionId: string | null = null;
   await db.transaction(async (tx) => {
     if (shouldSnapshot && current.body) {
+      const newRevId = crypto.randomUUID();
+      await tx.insert(revisions).values({
+        id: newRevId,
+        entryId: current.id,
+        body: current.body as never,
+        summary: previousText.slice(0, 80),
+        authorId: current.updatedById ?? user.id,
+      });
       const [rev] = await tx
-        .insert(revisions)
-        .values({
-          entryId: current.id,
-          body: current.body as never,
-          summary: previousText.slice(0, 80),
-          authorId: current.updatedById ?? user.id,
-        })
-        .returning({ id: revisions.id });
+        .select({ id: revisions.id })
+        .from(revisions)
+        .where(eq(revisions.id, newRevId))
+        .limit(1);
       if (rev) revisionId = rev.id;
     }
 
@@ -249,32 +333,42 @@ export async function saveEntryAction(input: SaveEntryInput): Promise<SaveEntryR
 
   revalidatePath(`/admin/contenido/${current.id}`);
   revalidatePath("/admin/contenido");
-  revalidateTag(`post:${ctx.workspace.slug}:${nextSlug}`);
 
-  // Encolar embedding solo si el contenido cambió suficientemente.
-  // Best-effort: si falla, no bloquea el guardado.
-  if (charsDelta >= 50 || (data.title && data.title !== current.title)) {
-    void enqueueIndex({ workspaceId: ctx.workspace.id, entryId: current.id }).catch(() => {});
+  // F9b: si la entry vive en una branch (forked/new/deleted) NO debemos:
+  //  - revalidar la cache pública (post:slug) — esa cache es para entries de main
+  //  - encolar embeddings — el search público no debe indexar fork content
+  //  - emitir webhook entry.updated — los suscribers externos verían eventos
+  //    sobre entries que nunca son visibles públicamente
+  // Estos se reactivan automáticamente al hacer merge (ver mergeBranch).
+  const isFork = current.branchId !== null;
+  if (!isFork) {
+    revalidateTag(`post:${ctx.workspace.slug}:${nextSlug}`);
+
+    // Encolar embedding solo si el contenido cambió suficientemente.
+    if (charsDelta >= 50 || (data.title && data.title !== current.title)) {
+      void enqueueIndex({ workspaceId: ctx.workspace.id, entryId: current.id }).catch(() => {});
+    }
+
+    // Webhook entry.updated (fire-and-forget)
+    emitAsync({
+      workspaceId: ctx.workspace.id,
+      event: "entry.updated",
+      payload: {
+        id: current.id,
+        title: data.title ?? current.title,
+        slug: nextSlug,
+        status: current.status,
+        via: "admin",
+      },
+    });
   }
-
-  // Webhook entry.updated (fire-and-forget)
-  emitAsync({
-    workspaceId: ctx.workspace.id,
-    event: "entry.updated",
-    payload: {
-      id: current.id,
-      title: data.title ?? current.title,
-      slug: nextSlug,
-      status: current.status,
-      via: "admin",
-    },
-  });
 
   return {
     ok: true,
     updatedAt: new Date().toISOString(),
     slug: nextSlug,
     revisionId,
+    ...(forkedToId ? { forkedToId } : {}),
   };
 }
 
@@ -289,25 +383,24 @@ export async function publishEntriesAction(input: { ids: string[] }) {
   const parsed = StatusActionSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "Datos inválidos" };
 
-  // Filtramos por status != 'published' para que el RETURNING sólo devuelva
-  // las entradas que realmente transicionaron — evita webhooks duplicados al
-  // re-publicar un set que ya estaba publicado.
-  const transitioned = await db
-    .update(entries)
-    .set({
+  // Pattern H atomic claim batch: SELECT FOR UPDATE + filter por precondición
+  // (status != "published" Y branchId IS NULL) + UPDATE. Evita webhooks
+  // duplicados al re-publicar entries ya publicadas y race con otros admins.
+  // F9b: bulk actions sólo afectan entries de main. Para publicar fork, mergea la branch.
+  const transitioned = await atomicClaimMany<{
+    id: string;
+    status: string;
+    branchId: string | null;
+  }>(entries, {
+    where: and(eq(entries.workspaceId, ctx.workspace.id), inArray(entries.id, parsed.data.ids))!,
+    precondition: (row) => row.status !== "published" && row.branchId === null,
+    set: {
       status: "published",
       publishedAt: new Date(),
       updatedById: user.id,
       updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(entries.workspaceId, ctx.workspace.id),
-        inArray(entries.id, parsed.data.ids),
-        ne(entries.status, "published"),
-      ),
-    )
-    .returning({ id: entries.id });
+    },
+  });
 
   await logActivity({
     workspaceId: ctx.workspace.id,
@@ -317,8 +410,10 @@ export async function publishEntriesAction(input: { ids: string[] }) {
     meta: { count: transitioned.length, requested: parsed.data.ids.length },
   });
 
-  // Re-encola embeddings (todos los publicados, transicionaron o no)
-  for (const id of parsed.data.ids) {
+  // L9: re-encola embeddings sólo para las que TRANSICIONARON. Antes iteraba
+  // sobre el input completo — un re-submit de bulk-publish para entries ya
+  // publicadas gastaba presupuesto de embeddings re-encolando todo.
+  for (const { id } of transitioned) {
     void enqueueIndex({ workspaceId: ctx.workspace.id, entryId: id }).catch(() => {});
   }
 
@@ -339,18 +434,16 @@ export async function unpublishEntriesAction(input: { ids: string[] }) {
   const parsed = StatusActionSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "Datos inválidos" };
 
-  // Sólo emitimos webhook por las que realmente estaban publicadas.
-  const transitioned = await db
-    .update(entries)
-    .set({ status: "draft", updatedById: user.id, updatedAt: new Date() })
-    .where(
-      and(
-        eq(entries.workspaceId, ctx.workspace.id),
-        inArray(entries.id, parsed.data.ids),
-        eq(entries.status, "published"),
-      ),
-    )
-    .returning({ id: entries.id });
+  // F9b: bulk actions sólo afectan main. Sólo webhook por las que transicionaron.
+  const transitioned = await atomicClaimMany<{
+    id: string;
+    status: string;
+    branchId: string | null;
+  }>(entries, {
+    where: and(eq(entries.workspaceId, ctx.workspace.id), inArray(entries.id, parsed.data.ids))!,
+    precondition: (row) => row.status === "published" && row.branchId === null,
+    set: { status: "draft", updatedById: user.id, updatedAt: new Date() },
+  });
 
   await logActivity({
     workspaceId: ctx.workspace.id,
@@ -381,6 +474,7 @@ export async function scheduleEntryAction(input: z.input<typeof ScheduleSchema>)
   const parsed = ScheduleSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "Datos inválidos" };
 
+  // F9b: scheduling sólo se aplica a entries de main (cron tampoco mira forks).
   await db
     .update(entries)
     .set({
@@ -389,7 +483,13 @@ export async function scheduleEntryAction(input: z.input<typeof ScheduleSchema>)
       updatedById: user.id,
       updatedAt: new Date(),
     })
-    .where(and(eq(entries.workspaceId, ctx.workspace.id), eq(entries.id, parsed.data.id)));
+    .where(
+      and(
+        eq(entries.workspaceId, ctx.workspace.id),
+        eq(entries.id, parsed.data.id),
+        isNull(entries.branchId),
+      ),
+    );
 
   await logActivity({
     workspaceId: ctx.workspace.id,
@@ -412,10 +512,17 @@ export async function archiveEntriesAction(input: { ids: string[] }) {
   const parsed = StatusActionSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "Datos inválidos" };
 
+  // F9b: archive sólo afecta main.
   await db
     .update(entries)
     .set({ status: "archived", updatedById: user.id, updatedAt: new Date() })
-    .where(and(eq(entries.workspaceId, ctx.workspace.id), inArray(entries.id, parsed.data.ids)));
+    .where(
+      and(
+        eq(entries.workspaceId, ctx.workspace.id),
+        inArray(entries.id, parsed.data.ids),
+        isNull(entries.branchId),
+      ),
+    );
 
   await logActivity({
     workspaceId: ctx.workspace.id,
@@ -436,9 +543,16 @@ export async function deleteEntriesAction(input: { ids: string[] }) {
   const parsed = StatusActionSchema.safeParse(input);
   if (!parsed.success) return { ok: false as const, error: "Datos inválidos" };
 
+  // F9b: delete sólo afecta main. Forks se borran desde /admin/branches.
   await db
     .delete(entries)
-    .where(and(eq(entries.workspaceId, ctx.workspace.id), inArray(entries.id, parsed.data.ids)));
+    .where(
+      and(
+        eq(entries.workspaceId, ctx.workspace.id),
+        inArray(entries.id, parsed.data.ids),
+        isNull(entries.branchId),
+      ),
+    );
 
   await logActivity({
     workspaceId: ctx.workspace.id,
@@ -462,11 +576,38 @@ export async function restoreRevisionAction(input: { entryId: string; revisionId
   const ctx = await requireWorkspace("editor");
   if (!db) return { ok: false as const, error: "DB no configurada" };
 
-  const entry = await getEntryById(ctx.workspace.id, input.entryId);
+  let entry = await getEntryById(ctx.workspace.id, input.entryId);
   if (!entry) return { ok: false as const, error: "No encontrada" };
 
-  const rev = await getRevision(input.revisionId);
-  if (!rev || rev.entryId !== entry.id) {
+  // F9b: si la branch activa es no-main y la entry vive en main, materializar
+  // fork primero — restaurar revision sin esto sobrescribiría producción.
+  const activeBranch = await resolveActiveBranch(ctx.workspace.id);
+  if (!activeBranch.isDefault && entry.branchId === null) {
+    try {
+      entry = await materializeForkOnEdit({
+        workspaceId: ctx.workspace.id,
+        entryId: entry.id,
+        branch: activeBranch,
+        actorId: user.id,
+      });
+    } catch (err) {
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : "No se pudo forkear",
+      };
+    }
+  } else if (activeBranch.isDefault && entry.branchId !== null) {
+    return {
+      ok: false as const,
+      error: "Esta entrada está en una branch — cambia a esa branch para restaurar",
+    };
+  }
+
+  const rev = await getRevision(input.revisionId, ctx.workspace.id);
+  // Tras un fork, `entry.id` cambia. La revision pertenece al main original
+  // (entry.originalEntryId si existe, o entry.id si era main directo).
+  const baseEntryId = entry.originalEntryId ?? entry.id;
+  if (!rev || (rev.entryId !== entry.id && rev.entryId !== baseEntryId)) {
     return { ok: false as const, error: "Revisión inválida" };
   }
 

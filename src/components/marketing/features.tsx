@@ -1,12 +1,15 @@
 import { Card, CardContent, CardDescription, CardTitle } from "@/components/ui/card";
 import {
+  Bot,
   Boxes,
   Brain,
   Code2,
   GitBranch,
   Globe2,
+  Heart,
   Image as ImageIcon,
   Mail,
+  Plug,
   Search,
   ShieldCheck,
   Sparkles,
@@ -67,13 +70,28 @@ const features = [
   },
   {
     icon: Users,
-    title: "Real-time colab",
-    desc: "Y.js presence con cursores, comentarios in-line sobre bloques, mentions, hilos resolubles.",
+    title: "Realtime collab self-hosted",
+    desc: "Y.js + cursores remotos + presence en TODO el admin (no solo el editor). Hot Right Now widget. Following mode. Reactions live en comentarios. Sin Hocuspocus extra.",
+  },
+  {
+    icon: Plug,
+    title: "MCP Server nativo",
+    desc: "14 tools expuestas a Claude Desktop, Cursor, VS Code y agentes externos. Stdio + Streamable HTTP. CLI csm mcp install detecta y configura el cliente automáticamente.",
+  },
+  {
+    icon: Bot,
+    title: "Agente IA in-product",
+    desc: "Chat conversacional dentro del admin con tool-use loop Anthropic puro. Reusa los 14 tools del MCP server. Auditoría apunta al user real.",
+  },
+  {
+    icon: Heart,
+    title: "Content Health Scan",
+    desc: "Cron weekly que escanea SEO, alt-text, jerarquía de headings, contenido fino, fechas obsoletas. Score 0-100 transparente. Único en CMS open-source.",
   },
   {
     icon: ShieldCheck,
     title: "Confianza enterprise",
-    desc: "2FA TOTP + Passkeys. Audit log. GDPR export. Backups diarios. CSP estricta. Rate limit. OWASP review.",
+    desc: "2FA TOTP + Passkeys WebAuthn. GDPR export ZIP completo. CSP estricta + Reporting API. BotID. AI cost cap. Audit log. OWASP top-10 audit clean.",
   },
 ];
 

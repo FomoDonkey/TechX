@@ -1,5 +1,60 @@
 import { shouldShow } from "@/blocks/audience";
-import { type BlockSpec, getBlockSpec, validateProps } from "@/blocks/registry";
+import { MotionHero, type MotionHeroVariant } from "@/blocks/motion-hero/client";
+import { type BlockSpec, getBlockSpec, isSafeUrl, validateProps } from "@/blocks/registry";
+import {
+  MichaelBento,
+  MichaelContactFooter,
+  MichaelExplorations,
+  MichaelHero,
+  MichaelJournal,
+  MichaelStats,
+} from "@/blocks/spectacular/agency-spotlight-sections";
+import {
+  MagazineCategories,
+  MagazineFeatured,
+  MagazineMasthead,
+  MagazineNewsletter,
+  MagazineStories,
+} from "@/blocks/spectacular/blog-particles-sections";
+import { MintHero, MintPerks, MintRoadmap } from "@/blocks/spectacular/coming-soon-sections";
+import {
+  NimbusCommunity,
+  NimbusDocsGrid,
+  NimbusHero,
+  NimbusQuickStart,
+} from "@/blocks/spectacular/docs-aurora-sections";
+import {
+  SecurifyHero,
+  SecurityCta,
+  SecurityPillars,
+  SecurityPricing,
+  SecuritySectors,
+} from "@/blocks/spectacular/launch-marquee-sections";
+import {
+  SubstackArchive,
+  SubstackFooter,
+  SubstackHeader,
+  SubstackHero,
+  SubstackPreview,
+  SubstackPricing,
+  SubstackTestimonial,
+} from "@/blocks/spectacular/newsletter-typewriter-sections";
+import {
+  JackAbout,
+  JackCta,
+  JackHero,
+  JackMarquee,
+  JackProjects,
+  JackServices,
+} from "@/blocks/spectacular/portfolio-spotlight-sections";
+import {
+  AsmeAbout,
+  AsmeCta,
+  AsmeFeaturedVideo,
+  AsmeHero,
+  AsmeServiceCards,
+  AsmeSplitVision,
+} from "@/blocks/spectacular/saas-magnetic-sections";
 import type { BlockNode, Breakpoint, RenderContext, ViewerContext } from "@/blocks/types";
 import { renderDoc } from "@/lib/render-doc";
 import { cn } from "@/lib/utils";
@@ -32,13 +87,25 @@ export function RenderLayout({ layout, ctx, breakpoint }: RenderProps): ReactNod
   // Pre-procesado: aplica audience + paywall y devuelve el árbol "trimado"
   // donde el truncado del paywall se propaga HACIA ARRIBA (sin contenido
   // post-paywall a NINGÚN nivel del árbol — patrón Substack estricto).
-  const trimmed = bypass ? layout : trimLayoutForViewer(layout, viewer).layout;
+  const trimmed = bypass ? layout : trimLayoutForViewer(layout, viewer, ctx.abMap).layout;
   const visible = trimmed.filter((n) => !n.hidden?.[breakpoint ?? "desktop"]);
+  const editMode = ctx.editMode === true;
   return (
     <>
-      {visible.map((node) => (
-        <Fragment key={node.id}>{renderNode(node, ctx, breakpoint)}</Fragment>
-      ))}
+      {visible.map((node) => {
+        const rendered = renderNode(node, ctx, breakpoint);
+        if (!editMode) return <Fragment key={node.id}>{rendered}</Fragment>;
+        return (
+          <div
+            key={node.id}
+            data-csm-block-id={node.id}
+            data-csm-block-kind={node.kind}
+            className="csm-edit-target relative outline-offset-[-2px] hover:outline hover:outline-2 hover:outline-violet-400/70"
+          >
+            {rendered}
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -54,6 +121,7 @@ export function RenderLayout({ layout, ctx, breakpoint }: RenderProps): ReactNod
 function trimLayoutForViewer(
   layout: BlockNode[],
   viewer: ViewerContext,
+  abMap: RenderContext["abMap"],
 ): { layout: BlockNode[]; truncated: boolean } {
   const out: BlockNode[] = [];
   for (const node of layout) {
@@ -69,8 +137,39 @@ function trimLayoutForViewer(
       continue;
     }
 
+    // A/B test: el bloque "ab" elige uno de sus children "ab-variant" según
+    // la variant resuelta para su testKey. Si no hay test activo o no
+    // matchea, mostramos el primer child (control).
+    if (node.kind === "ab") {
+      const props = validateProps("ab", node.props);
+      const testKey = typeof props.testKey === "string" ? props.testKey : "";
+      const children = node.children ?? [];
+      if (children.length === 0) continue;
+      const resolved = testKey && abMap ? abMap.get(testKey) : null;
+      const targetVariantId = resolved?.variantId ?? null;
+      // Filtra a los hijos ab-variant; otros hijos no válidos se ignoran
+      const variantChildren = children.filter((c) => c.kind === "ab-variant");
+      const pool = variantChildren.length > 0 ? variantChildren : children;
+      let chosen: BlockNode | null = null;
+      if (targetVariantId) {
+        chosen =
+          pool.find((c) => {
+            const cprops = c.props ?? {};
+            return (cprops as Record<string, unknown>).variantId === targetVariantId;
+          }) ?? null;
+      }
+      if (!chosen) chosen = pool[0] ?? null;
+      if (!chosen) continue;
+      // Recurse en los hijos del variant elegido
+      const sub = trimLayoutForViewer(chosen.children ?? [], viewer, abMap);
+      // Aplanamos: el wrapper "ab-variant" no aporta semántica visual.
+      out.push(...sub.layout);
+      if (sub.truncated) return { layout: out, truncated: true };
+      continue;
+    }
+
     if (node.children?.length) {
-      const sub = trimLayoutForViewer(node.children, viewer);
+      const sub = trimLayoutForViewer(node.children, viewer, abMap);
       out.push({ ...node, children: sub.layout });
       if (sub.truncated) return { layout: out, truncated: true };
       continue;
@@ -203,6 +302,8 @@ function BlockRender({
       return renderCta(props);
     case "hero":
       return renderHero(props, ctx);
+    case "motion-hero":
+      return renderMotionHero(props);
     case "features-grid":
       return renderFeaturesGrid(props);
     case "pricing":
@@ -224,6 +325,112 @@ function BlockRender({
       // Si llega aquí (p.ej. preview en builder con bypassGates) renderizamos
       // el card siempre como visualización informativa.
       return renderPaywallCard(props, ctx.viewer ?? GUEST);
+    case "ab":
+      // En render normal "ab" se procesa en trimLayoutForViewer y nunca llega
+      // aquí. Si llega (bypassGates), mostramos un wrapper informativo con
+      // todas las variants apiladas para que el builder vea ambas.
+      return renderAbPreview(props, children);
+    case "ab-variant":
+      // Idem: con bypass mostramos su contenido directamente.
+      return <div data-ab-variant={String(props.variantId ?? "")}>{children}</div>;
+
+    // ============================================================
+    // Bloques de plantillas espectaculares (tpl-*).
+    // Cada uno delega 1:1 en su client component. Las props llegan ya
+    // validadas por el Zod schema vía `validateProps()`.
+    // ============================================================
+    case "tpl-asme-hero":
+      return renderAsmeHero(props);
+    case "tpl-asme-about":
+      return <AsmeAbout {...(props as Record<string, never>)} />;
+    case "tpl-asme-featured-video":
+      return <AsmeFeaturedVideo {...(props as Record<string, never>)} />;
+    case "tpl-asme-split-vision":
+      return <AsmeSplitVision {...(props as Record<string, never>)} />;
+    case "tpl-asme-service-cards":
+      return renderAsmeServiceCards(props);
+    case "tpl-asme-cta":
+      return <AsmeCta {...(props as Record<string, never>)} />;
+
+    case "tpl-jack-hero":
+      return renderJackHero(props);
+    case "tpl-jack-marquee":
+      return renderJackMarquee(props);
+    case "tpl-jack-about":
+      return <JackAbout {...(props as Record<string, never>)} />;
+    case "tpl-jack-services":
+      return renderJackServices(props);
+    case "tpl-jack-projects":
+      return renderJackProjects(props);
+    case "tpl-jack-cta":
+      return <JackCta {...(props as Record<string, never>)} />;
+
+    case "tpl-michael-hero":
+      return renderMichaelHero(props);
+    case "tpl-michael-bento":
+      return renderMichaelBento(props);
+    case "tpl-michael-journal":
+      return renderMichaelJournal(props);
+    case "tpl-michael-explorations":
+      return renderMichaelExplorations(props);
+    case "tpl-michael-stats":
+      return renderMichaelStats(props);
+    case "tpl-michael-contact-footer":
+      return renderMichaelContactFooter(props);
+
+    case "tpl-mint-hero":
+      return renderMintHero(props);
+    case "tpl-mint-perks":
+      return renderMintPerks(props);
+    case "tpl-mint-roadmap":
+      return renderMintRoadmap(props);
+
+    case "tpl-nimbus-hero":
+      return renderNimbusHero(props);
+    case "tpl-nimbus-docs-grid":
+      return renderNimbusDocsGrid(props);
+    case "tpl-nimbus-quick-start":
+      return renderNimbusQuickStart(props);
+    case "tpl-nimbus-community":
+      return <NimbusCommunity {...(props as Record<string, never>)} />;
+
+    case "tpl-securify-hero":
+      return renderSecurifyHero(props);
+    case "tpl-security-sectors":
+      return renderSecuritySectors(props);
+    case "tpl-security-pillars":
+      return renderSecurityPillars(props);
+    case "tpl-security-pricing":
+      return renderSecurityPricing(props);
+    case "tpl-security-cta":
+      return <SecurityCta {...(props as Record<string, never>)} />;
+
+    case "tpl-magazine-masthead":
+      return renderMagazineMasthead(props);
+    case "tpl-magazine-featured":
+      return renderMagazineFeatured(props);
+    case "tpl-magazine-categories":
+      return renderMagazineCategories(props);
+    case "tpl-magazine-stories":
+      return renderMagazineStories(props);
+    case "tpl-magazine-newsletter":
+      return <MagazineNewsletter {...(props as Record<string, never>)} />;
+
+    case "tpl-substack-header":
+      return <SubstackHeader {...(props as Record<string, never>)} />;
+    case "tpl-substack-hero":
+      return <SubstackHero {...(props as Record<string, never>)} />;
+    case "tpl-substack-preview":
+      return renderSubstackPreview(props);
+    case "tpl-substack-testimonial":
+      return <SubstackTestimonial {...(props as Record<string, never>)} />;
+    case "tpl-substack-pricing":
+      return renderSubstackPricing(props);
+    case "tpl-substack-archive":
+      return renderSubstackArchive(props);
+    case "tpl-substack-footer":
+      return renderSubstackFooter(props);
+
     default:
       return (
         <div className="rounded border border-dashed p-4 text-xs text-muted-foreground">
@@ -231,6 +438,750 @@ function BlockRender({
         </div>
       );
   }
+}
+
+// ============================================================
+// Helpers de render para bloques tpl-* que tienen normalización
+// de props no triviales (legacy/shape variants del inspector).
+// ============================================================
+function renderAsmeHero(props: Record<string, unknown>): ReactNode {
+  // socials puede llegar como string[] o {key}[] desde el inspector
+  const rawSocials = props.socials;
+  let socials: Array<"instagram" | "twitter" | "globe"> = [];
+  if (Array.isArray(rawSocials)) {
+    socials = rawSocials
+      .map((it) => {
+        if (typeof it === "string") return it as "instagram" | "twitter" | "globe";
+        if (it && typeof it === "object" && typeof (it as { key?: unknown }).key === "string") {
+          return (it as { key: string }).key as "instagram" | "twitter" | "globe";
+        }
+        return null;
+      })
+      .filter(
+        (x): x is "instagram" | "twitter" | "globe" =>
+          x === "instagram" || x === "twitter" || x === "globe",
+      );
+  }
+  const navItemsRaw = Array.isArray(props.navItems)
+    ? (props.navItems as Array<{ label?: unknown; href?: unknown }>)
+    : [];
+  const navItems = navItemsRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  return (
+    <AsmeHero
+      brand={s(props, "brand") || undefined}
+      navItems={navItems.length > 0 ? navItems : undefined}
+      signupText={s(props, "signupText") || undefined}
+      loginText={s(props, "loginText") || undefined}
+      loginHref={s(props, "loginHref") || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      titleHtml={s(props, "titleHtml") || undefined}
+      emailPlaceholder={s(props, "emailPlaceholder") || undefined}
+      subtitle={s(props, "subtitle") || undefined}
+      manifestoText={s(props, "manifestoText") || undefined}
+      socials={socials.length > 0 ? socials : undefined}
+    />
+  );
+}
+
+function renderAsmeServiceCards(props: Record<string, unknown>): ReactNode {
+  const cardsRaw = Array.isArray(props.cards)
+    ? (props.cards as Array<Record<string, unknown>>)
+    : [];
+  const cards = cardsRaw.map((c) => ({
+    tag: typeof c.tag === "string" ? c.tag : "",
+    title: typeof c.title === "string" ? c.title : "",
+    desc: typeof c.desc === "string" ? c.desc : "",
+    videoUrl: typeof c.videoUrl === "string" ? c.videoUrl : "",
+  }));
+  return (
+    <AsmeServiceCards
+      anchorId={s(props, "anchorId") || undefined}
+      sectionTitle={s(props, "sectionTitle") || undefined}
+      sectionEyebrow={s(props, "sectionEyebrow") || undefined}
+      cards={cards.length > 0 ? cards : undefined}
+    />
+  );
+}
+
+function renderJackHero(props: Record<string, unknown>): ReactNode {
+  const navItemsRaw = Array.isArray(props.navItems)
+    ? (props.navItems as Array<{ label?: unknown; href?: unknown }>)
+    : [];
+  const navItems = navItemsRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  return (
+    <JackHero
+      navItems={navItems.length > 0 ? navItems : undefined}
+      titleText={s(props, "titleText") || undefined}
+      portraitUrl={s(props, "portraitUrl") || undefined}
+      bottomCopy={s(props, "bottomCopy") || undefined}
+      contactText={s(props, "contactText") || undefined}
+      contactHref={s(props, "contactHref") || undefined}
+    />
+  );
+}
+
+function renderJackMarquee(props: Record<string, unknown>): ReactNode {
+  const rawGifs = props.gifs;
+  let gifs: string[] = [];
+  if (Array.isArray(rawGifs)) {
+    gifs = rawGifs
+      .map((it) => {
+        if (typeof it === "string") return it;
+        if (it && typeof it === "object" && typeof (it as { src?: unknown }).src === "string") {
+          return (it as { src: string }).src;
+        }
+        return null;
+      })
+      .filter((x): x is string => !!x);
+  }
+  return (
+    <JackMarquee
+      gifs={gifs.length > 0 ? gifs : undefined}
+      splitAt={n(props, "splitAt", 11) || undefined}
+    />
+  );
+}
+
+function renderJackServices(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    n: typeof it.n === "string" ? it.n : "01",
+    name: typeof it.name === "string" ? it.name : "",
+    desc: typeof it.desc === "string" ? it.desc : "",
+  }));
+  return (
+    <JackServices
+      anchorId={s(props, "anchorId") || undefined}
+      title={s(props, "title") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+function renderJackProjects(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    number: typeof it.number === "string" ? it.number : "01",
+    category: typeof it.category === "string" ? it.category : "",
+    name: typeof it.name === "string" ? it.name : "",
+    liveButtonText: typeof it.liveButtonText === "string" ? it.liveButtonText : "Live Project",
+    img1: typeof it.img1 === "string" ? it.img1 : "",
+    img2: typeof it.img2 === "string" ? it.img2 : "",
+    img3: typeof it.img3 === "string" ? it.img3 : "",
+  }));
+  return (
+    <JackProjects
+      anchorId={s(props, "anchorId") || undefined}
+      title={s(props, "title") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+// ============================================================
+// Michael (agency-spotlight) — helpers
+// ============================================================
+function flattenStringArray(raw: unknown, key: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((it) => {
+      if (typeof it === "string") return it;
+      if (
+        it &&
+        typeof it === "object" &&
+        typeof (it as Record<string, unknown>)[key] === "string"
+      ) {
+        return (it as Record<string, string>)[key]!;
+      }
+      return null;
+    })
+    .filter((x): x is string => !!x);
+}
+
+function renderMichaelHero(props: Record<string, unknown>): ReactNode {
+  const navItemsRaw = Array.isArray(props.navItems)
+    ? (props.navItems as Array<{ label?: unknown; href?: unknown }>)
+    : [];
+  const navItems = navItemsRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  const loadingWords = flattenStringArray(props.loadingWords, "label");
+  const cycleWords = flattenStringArray(props.cycleWords, "label");
+  return (
+    <MichaelHero
+      showLoading={typeof props.showLoading === "boolean" ? props.showLoading : undefined}
+      loadingWords={loadingWords.length > 0 ? loadingWords : undefined}
+      loadingDurationMs={n(props, "loadingDurationMs", 0) || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      navInitials={s(props, "navInitials") || undefined}
+      navItems={navItems.length > 0 ? navItems : undefined}
+      navCtaText={s(props, "navCtaText") || undefined}
+      navCtaHref={s(props, "navCtaHref") || undefined}
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      preCycleText={s(props, "preCycleText") || undefined}
+      cycleWords={cycleWords.length > 0 ? cycleWords : undefined}
+      cycleIntervalMs={n(props, "cycleIntervalMs", 0) || undefined}
+      postCycleText={s(props, "postCycleText") || undefined}
+      description={s(props, "description") || undefined}
+      primaryButtonText={s(props, "primaryButtonText") || undefined}
+      secondaryButtonText={s(props, "secondaryButtonText") || undefined}
+      scrollLabel={s(props, "scrollLabel") || undefined}
+    />
+  );
+}
+
+function renderMichaelBento(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    title: typeof it.title === "string" ? it.title : "",
+    img: typeof it.img === "string" ? it.img : "",
+    span: typeof it.span === "string" ? it.span : "md:col-span-6",
+    aspect: typeof it.aspect === "string" ? it.aspect : "aspect-[16/10]",
+  }));
+  return (
+    <MichaelBento
+      anchorId={s(props, "anchorId") || undefined}
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      ctaHref={s(props, "ctaHref") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+function renderMichaelJournal(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    title: typeof it.title === "string" ? it.title : "",
+    minutes: typeof it.minutes === "string" ? it.minutes : "",
+    date: typeof it.date === "string" ? it.date : "",
+    img: typeof it.img === "string" ? it.img : "",
+  }));
+  return (
+    <MichaelJournal
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      ctaHref={s(props, "ctaHref") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+function renderMichaelExplorations(props: Record<string, unknown>): ReactNode {
+  const images = flattenStringArray(props.images, "src");
+  return (
+    <MichaelExplorations
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      images={images.length > 0 ? images : undefined}
+      splitAt={n(props, "splitAt", 0) || undefined}
+      factorLeft={typeof props.factorLeft === "number" ? props.factorLeft : undefined}
+      factorRight={typeof props.factorRight === "number" ? props.factorRight : undefined}
+    />
+  );
+}
+
+function renderMichaelStats(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    value: typeof it.value === "string" ? it.value : "",
+    label: typeof it.label === "string" ? it.label : "",
+  }));
+  return <MichaelStats items={items.length > 0 ? items : undefined} />;
+}
+
+// ============================================================
+// Mint (coming-soon-typewriter) — helpers
+// ============================================================
+function renderMintHero(props: Record<string, unknown>): ReactNode {
+  const labelsRaw =
+    props.countdownLabels && typeof props.countdownLabels === "object"
+      ? (props.countdownLabels as Record<string, unknown>)
+      : {};
+  const countdownLabels = {
+    days: typeof labelsRaw.days === "string" ? labelsRaw.days : "días",
+    hours: typeof labelsRaw.hours === "string" ? labelsRaw.hours : "horas",
+    minutes: typeof labelsRaw.minutes === "string" ? labelsRaw.minutes : "min",
+    seconds: typeof labelsRaw.seconds === "string" ? labelsRaw.seconds : "seg",
+  };
+  return (
+    <MintHero
+      logoLabel={s(props, "logoLabel") || undefined}
+      notifyButtonText={s(props, "notifyButtonText") || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      badge={s(props, "badge") || undefined}
+      titleHtml={s(props, "titleHtml") || undefined}
+      description={s(props, "description") || undefined}
+      targetDate={s(props, "targetDate") || undefined}
+      countdownLabels={countdownLabels}
+      emailPlaceholder={s(props, "emailPlaceholder") || undefined}
+      successMessage={s(props, "successMessage") || undefined}
+      disclaimer={s(props, "disclaimer") || undefined}
+    />
+  );
+}
+
+function renderMintPerks(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.perks)
+    ? (props.perks as Array<Record<string, unknown>>)
+    : [];
+  const perks = itemsRaw.map((it) => ({
+    icon: typeof it.icon === "string" ? it.icon : "Sparkles",
+    title: typeof it.title === "string" ? it.title : "",
+    desc: typeof it.desc === "string" ? it.desc : "",
+  }));
+  return (
+    <MintPerks
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      perks={perks.length > 0 ? perks : undefined}
+    />
+  );
+}
+
+// ============================================================
+// Magazine (blog-particles) — helpers
+// ============================================================
+function renderMagazineMasthead(props: Record<string, unknown>): ReactNode {
+  const navLinks = flattenStringArray(props.navLinks, "label");
+  return (
+    <MagazineMasthead
+      issueNumber={s(props, "issueNumber") || undefined}
+      publicationName={s(props, "publicationName") || undefined}
+      subscribeText={s(props, "subscribeText") || undefined}
+      navLinks={navLinks.length > 0 ? navLinks : undefined}
+    />
+  );
+}
+
+function renderMagazineFeatured(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.sidebarItems)
+    ? (props.sidebarItems as Array<Record<string, unknown>>)
+    : [];
+  const sidebarItems = itemsRaw.map((it) => ({
+    cat: typeof it.cat === "string" ? it.cat : "",
+    title: typeof it.title === "string" ? it.title : "",
+    author: typeof it.author === "string" ? it.author : "",
+    minutes: typeof it.minutes === "string" ? it.minutes : "",
+    cover: typeof it.cover === "string" ? it.cover : "",
+  }));
+  return (
+    <MagazineFeatured
+      featuredCategory={s(props, "featuredCategory") || undefined}
+      featuredTitle={s(props, "featuredTitle") || undefined}
+      featuredHook={s(props, "featuredHook") || undefined}
+      featuredAuthor={s(props, "featuredAuthor") || undefined}
+      featuredMinutes={s(props, "featuredMinutes") || undefined}
+      featuredDate={s(props, "featuredDate") || undefined}
+      featuredCover={s(props, "featuredCover") || undefined}
+      sidebarLabel={s(props, "sidebarLabel") || undefined}
+      sidebarItems={sidebarItems.length > 0 ? sidebarItems : undefined}
+    />
+  );
+}
+
+function renderMagazineCategories(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    name: typeof it.name === "string" ? it.name : "",
+    count: typeof it.count === "number" ? it.count : Number(it.count) || 0,
+    color: typeof it.color === "string" ? it.color : "#7c2d12",
+  }));
+  return (
+    <MagazineCategories
+      title={s(props, "title") || undefined}
+      totalLabel={s(props, "totalLabel") || undefined}
+      totalSuffix={s(props, "totalSuffix") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+function renderMagazineStories(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    cat: typeof it.cat === "string" ? it.cat : "",
+    title: typeof it.title === "string" ? it.title : "",
+    excerpt: typeof it.excerpt === "string" ? it.excerpt : "",
+    cover: typeof it.cover === "string" ? it.cover : "",
+  }));
+  return (
+    <MagazineStories
+      title={s(props, "title") || undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      ctaHref={s(props, "ctaHref") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+// ============================================================
+// Substack (newsletter-typewriter) — helpers
+// ============================================================
+function renderSubstackPreview(props: Record<string, unknown>): ReactNode {
+  const paragraphs = flattenStringArray(props.paragraphs, "text");
+  return (
+    <SubstackPreview
+      eyebrow={s(props, "eyebrow") || undefined}
+      issueNumber={s(props, "issueNumber") || undefined}
+      title={s(props, "title") || undefined}
+      meta={s(props, "meta") || undefined}
+      paragraphs={paragraphs.length > 0 ? paragraphs : undefined}
+      paywallTitle={s(props, "paywallTitle") || undefined}
+      paywallDescription={s(props, "paywallDescription") || undefined}
+      paywallButtonText={s(props, "paywallButtonText") || undefined}
+    />
+  );
+}
+
+function renderSubstackPricing(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.tiers)
+    ? (props.tiers as Array<Record<string, unknown>>)
+    : [];
+  const tiers = itemsRaw.map((it) => {
+    const featuresRaw = it.features;
+    let features: string[] = [];
+    if (Array.isArray(featuresRaw)) {
+      features = featuresRaw.filter((f): f is string => typeof f === "string");
+    } else if (typeof featuresRaw === "string") {
+      features = featuresRaw
+        .split(/\r?\n/)
+        .map((f) => f.trim())
+        .filter(Boolean);
+    }
+    return {
+      label: typeof it.label === "string" ? it.label : "",
+      price: typeof it.price === "string" ? it.price : "",
+      period: typeof it.period === "string" ? it.period : undefined,
+      subPeriod: typeof it.subPeriod === "string" ? it.subPeriod : undefined,
+      features,
+      buttonText: typeof it.buttonText === "string" ? it.buttonText : "",
+      recommended: it.recommended === true,
+      recommendedText: typeof it.recommendedText === "string" ? it.recommendedText : undefined,
+    };
+  });
+  return (
+    <SubstackPricing
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      tiers={tiers.length > 0 ? tiers : undefined}
+    />
+  );
+}
+
+function renderSubstackArchive(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    n: typeof it.n === "string" ? it.n : "",
+    title: typeof it.title === "string" ? it.title : "",
+    excerpt: typeof it.excerpt === "string" ? it.excerpt : "",
+    minutes: typeof it.minutes === "string" ? it.minutes : "",
+    date: typeof it.date === "string" ? it.date : "",
+    free: it.free === true,
+  }));
+  return (
+    <SubstackArchive
+      title={s(props, "title") || undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      ctaHref={s(props, "ctaHref") || undefined}
+      items={items.length > 0 ? items : undefined}
+      freeLabel={s(props, "freeLabel") || undefined}
+      premiumLabel={s(props, "premiumLabel") || undefined}
+    />
+  );
+}
+
+function renderSubstackFooter(props: Record<string, unknown>): ReactNode {
+  const linksRaw = Array.isArray(props.links)
+    ? (props.links as Array<Record<string, unknown>>)
+    : [];
+  const links = linksRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  return (
+    <SubstackFooter
+      copyright={s(props, "copyright") || undefined}
+      links={links.length > 0 ? links : undefined}
+    />
+  );
+}
+
+// ============================================================
+// Securify (launch-marquee) — helpers
+// ============================================================
+function renderSecurifyHero(props: Record<string, unknown>): ReactNode {
+  const navItemsRaw = Array.isArray(props.navItems)
+    ? (props.navItems as Array<{ label?: unknown; href?: unknown }>)
+    : [];
+  const navItems = navItemsRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  const wordsRaw = Array.isArray(props.staggeredWords)
+    ? (props.staggeredWords as Array<Record<string, unknown>>)
+    : [];
+  const staggeredWords = wordsRaw.map((w) => ({
+    text: typeof w.text === "string" ? w.text : "",
+    position: typeof w.position === "string" ? w.position : "",
+  }));
+  const statsRaw = Array.isArray(props.stats)
+    ? (props.stats as Array<Record<string, unknown>>)
+    : [];
+  const stats = statsRaw.map((st) => ({
+    value: typeof st.value === "string" ? st.value : "",
+    label: typeof st.label === "string" ? st.label : "",
+    position: typeof st.position === "string" ? st.position : "",
+    divisor: (st.divisor === "right" ? "right" : "left") as "left" | "right",
+    alignRight: st.alignRight === true,
+  }));
+  return (
+    <SecurifyHero
+      brand={s(props, "brand") || undefined}
+      navItems={navItems.length > 0 ? navItems : undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      staggeredWords={staggeredWords.length > 0 ? staggeredWords : undefined}
+      description={s(props, "description") || undefined}
+      descriptionPosition={s(props, "descriptionPosition") || undefined}
+      stats={stats.length > 0 ? stats : undefined}
+      widgetEyebrow={s(props, "widgetEyebrow") || undefined}
+      widgetText={s(props, "widgetText") || undefined}
+      widgetButtonText={s(props, "widgetButtonText") || undefined}
+    />
+  );
+}
+
+function renderSecuritySectors(props: Record<string, unknown>): ReactNode {
+  const sectors = flattenStringArray(props.sectors, "label");
+  return (
+    <SecuritySectors
+      eyebrow={s(props, "eyebrow") || undefined}
+      sectors={sectors.length > 0 ? sectors : undefined}
+      duration={n(props, "duration", 0) || undefined}
+    />
+  );
+}
+
+function renderSecurityPillars(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.pillars)
+    ? (props.pillars as Array<Record<string, unknown>>)
+    : [];
+  const pillars = itemsRaw.map((it) => ({
+    n: typeof it.n === "string" ? it.n : "01",
+    title: typeof it.title === "string" ? it.title : "",
+    desc: typeof it.desc === "string" ? it.desc : "",
+  }));
+  return (
+    <SecurityPillars
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      pillars={pillars.length > 0 ? pillars : undefined}
+    />
+  );
+}
+
+function renderSecurityPricing(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.tiers)
+    ? (props.tiers as Array<Record<string, unknown>>)
+    : [];
+  const tiers = itemsRaw.map((it) => {
+    const featuresRaw = it.features;
+    let features: string[] = [];
+    if (Array.isArray(featuresRaw)) {
+      features = featuresRaw.filter((f): f is string => typeof f === "string");
+    } else if (typeof featuresRaw === "string") {
+      features = featuresRaw
+        .split(/\r?\n/)
+        .map((f) => f.trim())
+        .filter(Boolean);
+    }
+    return {
+      label: typeof it.label === "string" ? it.label : "",
+      price: typeof it.price === "string" ? it.price : "",
+      period: typeof it.period === "string" ? it.period : undefined,
+      features,
+      buttonText: typeof it.buttonText === "string" ? it.buttonText : "",
+      featured: it.featured === true,
+      highlight: typeof it.highlight === "string" ? it.highlight : undefined,
+    };
+  });
+  return (
+    <SecurityPricing
+      anchorId={s(props, "anchorId") || undefined}
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      tiers={tiers.length > 0 ? tiers : undefined}
+    />
+  );
+}
+
+// ============================================================
+// Nimbus (docs-aurora) — helpers
+// ============================================================
+function renderNimbusHero(props: Record<string, unknown>): ReactNode {
+  const navItemsRaw = Array.isArray(props.navItems)
+    ? (props.navItems as Array<Record<string, unknown>>)
+    : [];
+  const navItems = navItemsRaw.map((it) => ({
+    label: typeof it.label === "string" ? it.label : "",
+    href: typeof it.href === "string" ? it.href : "#",
+    chevron: it.chevron === true,
+  }));
+  const logos = flattenStringArray(props.logos, "label");
+  return (
+    <NimbusHero
+      brand={s(props, "brand") || undefined}
+      navItems={navItems.length > 0 ? navItems : undefined}
+      loginText={s(props, "loginText") || undefined}
+      signupText={s(props, "signupText") || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      titleHtml={s(props, "titleHtml") || undefined}
+      description={s(props, "description") || undefined}
+      ctaText={s(props, "ctaText") || undefined}
+      marqueeLabel={s(props, "marqueeLabel") || undefined}
+      logos={logos.length > 0 ? logos : undefined}
+    />
+  );
+}
+
+function renderNimbusDocsGrid(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    icon: typeof it.icon === "string" ? it.icon : "FileText",
+    title: typeof it.title === "string" ? it.title : "",
+    desc: typeof it.desc === "string" ? it.desc : "",
+    href: typeof it.href === "string" ? it.href : "#",
+  }));
+  return (
+    <NimbusDocsGrid
+      anchorId={s(props, "anchorId") || undefined}
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      items={items.length > 0 ? items : undefined}
+    />
+  );
+}
+
+function renderNimbusQuickStart(props: Record<string, unknown>): ReactNode {
+  const steps = flattenStringArray(props.steps, "label");
+  return (
+    <NimbusQuickStart
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      description={s(props, "description") || undefined}
+      steps={steps.length > 0 ? steps : undefined}
+      codeFilename={s(props, "codeFilename") || undefined}
+      code={s(props, "code") || undefined}
+    />
+  );
+}
+
+function renderMintRoadmap(props: Record<string, unknown>): ReactNode {
+  const itemsRaw = Array.isArray(props.items)
+    ? (props.items as Array<Record<string, unknown>>)
+    : [];
+  const items = itemsRaw.map((it) => ({
+    date: typeof it.date === "string" ? it.date : "",
+    label: typeof it.label === "string" ? it.label : "",
+    done: it.done === true,
+  }));
+  return (
+    <MintRoadmap
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      items={items.length > 0 ? items : undefined}
+      doneLabel={s(props, "doneLabel") || undefined}
+      pendingLabel={s(props, "pendingLabel") || undefined}
+    />
+  );
+}
+
+function renderMichaelContactFooter(props: Record<string, unknown>): ReactNode {
+  const rawSocials = props.socials;
+  type SocialKey = "twitter" | "linkedin" | "github" | "messageCircle";
+  let socials: SocialKey[] = [];
+  if (Array.isArray(rawSocials)) {
+    socials = rawSocials
+      .map((it): SocialKey | null => {
+        if (typeof it === "string") {
+          if (it === "twitter" || it === "linkedin" || it === "github" || it === "messageCircle") {
+            return it;
+          }
+          return null;
+        }
+        if (it && typeof it === "object" && typeof (it as { key?: unknown }).key === "string") {
+          const k = (it as { key: string }).key;
+          if (k === "twitter" || k === "linkedin" || k === "github" || k === "messageCircle") {
+            return k;
+          }
+        }
+        return null;
+      })
+      .filter((x): x is SocialKey => !!x);
+  }
+  return (
+    <MichaelContactFooter
+      anchorId={s(props, "anchorId") || undefined}
+      videoUrl={s(props, "videoUrl") || undefined}
+      marqueeText={s(props, "marqueeText") || undefined}
+      marqueeIterations={n(props, "marqueeIterations", 0) || undefined}
+      marqueeDuration={n(props, "marqueeDuration", 0) || undefined}
+      eyebrow={s(props, "eyebrow") || undefined}
+      title={s(props, "title") || undefined}
+      emailLabel={s(props, "emailLabel") || undefined}
+      emailHref={s(props, "emailHref") || undefined}
+      socials={socials.length > 0 ? socials : undefined}
+      statusText={s(props, "statusText") || undefined}
+      copyright={s(props, "copyright") || undefined}
+    />
+  );
+}
+
+function renderAbPreview(props: Record<string, unknown>, children: ReactNode): ReactNode {
+  const testKey = typeof props.testKey === "string" ? props.testKey : "";
+  return (
+    <div className="my-4 rounded-2xl border border-dashed border-violet-500/50 bg-violet-500/5 p-4">
+      <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-violet-300">
+        <Icons.FlaskConical className="size-3.5" />
+        A/B Test{testKey ? ` · ${testKey}` : ""}{" "}
+        <span className="text-muted-foreground">· preview todas las variants</span>
+      </div>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
 }
 
 // ---------------- helpers de tokens ----------------
@@ -764,6 +1715,52 @@ function renderHero(props: Record<string, unknown>, ctx: RenderContext): ReactNo
   );
 }
 
+function renderMotionHero(props: Record<string, unknown>): ReactNode {
+  const allowed: MotionHeroVariant[] = [
+    "aurora",
+    "magnetic",
+    "spotlight",
+    "typewriter",
+    "marquee",
+    "particles",
+  ];
+  const rawVariant = s(props, "variant");
+  const variant: MotionHeroVariant = allowed.includes(rawVariant as MotionHeroVariant)
+    ? (rawVariant as MotionHeroVariant)
+    : "aurora";
+
+  // marqueeItems puede llegar como string[] (defaults legacy) o {label}[] (Inspector items).
+  const rawItems = props.marqueeItems;
+  let marqueeItems: string[] | undefined;
+  if (Array.isArray(rawItems)) {
+    marqueeItems = rawItems
+      .map((it) => {
+        if (typeof it === "string") return it;
+        if (it && typeof it === "object" && typeof (it as { label?: unknown }).label === "string") {
+          return (it as { label: string }).label;
+        }
+        return null;
+      })
+      .filter((x): x is string => !!x);
+  }
+
+  return (
+    <MotionHero
+      variant={variant}
+      title={s(props, "title") || "Construye algo espectacular"}
+      badge={s(props, "badge") || undefined}
+      subtitle={s(props, "subtitle") || undefined}
+      primaryText={s(props, "primaryText") || undefined}
+      primaryHref={(isSafeUrl(s(props, "primaryHref")) ? s(props, "primaryHref") : "#") || "#"}
+      secondaryText={s(props, "secondaryText") || undefined}
+      secondaryHref={
+        (isSafeUrl(s(props, "secondaryHref")) ? s(props, "secondaryHref") : "#") || "#"
+      }
+      marqueeItems={marqueeItems}
+    />
+  );
+}
+
 function lucideIcon(name: string, className?: string): ReactNode {
   const Cmp = (Icons as unknown as Record<string, React.FC<{ className?: string }>>)[name];
   if (!Cmp) return null;
@@ -980,12 +1977,16 @@ function renderFaq(props: Record<string, unknown>): ReactNode {
   );
 }
 
+// Reutiliza `isSafeUrl` del registry para defense-in-depth en hrefs
+// parseados desde longtext (footer columns) que NO pasan por validateProps
+// individualmente. Bloquea javascript:/data:/file:/protocol-relative igual.
 function parseLink(line: string): { text: string; href: string } | null {
   const idx = line.indexOf("|");
   if (idx === -1) return null;
   const text = line.slice(0, idx).trim();
   const href = line.slice(idx + 1).trim();
   if (!text || !href) return null;
+  if (!isSafeUrl(href)) return null;
   return { text, href };
 }
 

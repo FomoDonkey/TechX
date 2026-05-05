@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "@/db/client";
 import { collections, entries, entryTerms, taxonomies, terms } from "@/db/schema";
 import { POSTS_SLUG } from "@/lib/entries";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 const SLUG_RE = /^[a-z0-9-]+$/;
 
@@ -56,6 +56,8 @@ export async function getTagPosts(workspaceId: string, slug: string): Promise<Ta
         eq(entries.status, "published"),
         eq(collections.slug, POSTS_SLUG),
         eq(entryTerms.termId, match.id),
+        // F9b: archivo público por tag no muestra forks.
+        isNull(entries.branchId),
       ),
     )
     .orderBy(desc(entries.publishedAt))

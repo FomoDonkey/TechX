@@ -239,11 +239,15 @@ export async function cancelMembershipAction(input: { id: string; immediate?: bo
     updatedAt: now,
   };
   if (input.immediate) updates.currentPeriodEnd = now;
-  const [updated] = await db
+  await db
     .update(memberships)
     .set(updates)
+    .where(and(eq(memberships.workspaceId, ctx.workspace.id), eq(memberships.id, id.data)));
+  const [updated] = await db
+    .select()
+    .from(memberships)
     .where(and(eq(memberships.workspaceId, ctx.workspace.id), eq(memberships.id, id.data)))
-    .returning();
+    .limit(1);
   if (!updated) return { ok: false as const, error: "not_found" };
 
   await recordMemberEvent({

@@ -1,5 +1,6 @@
 import { type BlockNode, normalizeLayout } from "@/blocks/types";
 import { db } from "@/db/client";
+import { insertReturning } from "@/db/dialect";
 import { type Symbol as SymbolRow, symbols } from "@/db/schema";
 import { slugify, withSuffix } from "@/lib/slug";
 import { and, asc, eq } from "drizzle-orm";
@@ -93,16 +94,15 @@ export async function createSymbol(input: CreateSymbolInput): Promise<SymbolRow>
         ? await ensureUniqueSymbolSlug(input.workspaceId, baseSlug)
         : `${baseSlug}-${attempt}-${Math.random().toString(36).slice(2, 6)}`;
     try {
-      const [created] = await db
-        .insert(symbols)
-        .values({
-          workspaceId: input.workspaceId,
-          name,
-          slug,
-          description: input.description ?? null,
-          layout: normalizeLayout(input.layout ?? []),
-        })
-        .returning();
+      const id = crypto.randomUUID();
+      const created = (await insertReturning(symbols, {
+        id,
+        workspaceId: input.workspaceId,
+        name,
+        slug,
+        description: input.description ?? null,
+        layout: normalizeLayout(input.layout ?? []),
+      })) as SymbolRow;
       if (!created) throw new Error("No se pudo crear el símbolo");
       return created;
     } catch (err) {
@@ -129,11 +129,16 @@ export async function updateSymbol(input: UpdateSymbolInput): Promise<SymbolRow>
   if (input.description !== undefined) patch.description = input.description;
   if (input.layout !== undefined) patch.layout = normalizeLayout(input.layout);
 
-  const [updated] = await db
+  // UPDATE + SELECT post-update (MySQL no soporta UPDATE...RETURNING).
+  await db
     .update(symbols)
     .set(patch)
+    .where(and(eq(symbols.workspaceId, input.workspaceId), eq(symbols.id, input.id)));
+  const [updated] = await db
+    .select()
+    .from(symbols)
     .where(and(eq(symbols.workspaceId, input.workspaceId), eq(symbols.id, input.id)))
-    .returning();
+    .limit(1);
   if (!updated) throw new Error("Símbolo no encontrado");
   return updated;
 }

@@ -7,6 +7,7 @@ import {
   unpublishEntriesAction,
 } from "@/app/admin/contenido/_actions";
 import { RelativeTime } from "@/components/admin/dashboard/relative-time";
+import { PresenceStack } from "@/components/admin/presence-stack";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm";
@@ -49,6 +50,8 @@ function statusBadge(status: Status) {
       return <Badge className="bg-primary/15 text-primary">Programado</Badge>;
     case "review":
       return <Badge className="bg-accent/15 text-accent">Revisión</Badge>;
+    case "approved":
+      return <Badge className="bg-blue-500/15 text-blue-600 dark:text-blue-400">Aprobado</Badge>;
     case "archived":
       return <Badge variant="outline">Archivado</Badge>;
     default:
@@ -109,12 +112,15 @@ export function PostsTable({
         header: ({ column }) => <SortableHeader column={column} label="Título" />,
         cell: ({ row }) => (
           <div className="min-w-0">
-            <Link
-              href={`/admin/contenido/${row.original.id}`}
-              className="block truncate font-medium hover:text-primary"
-            >
-              {row.original.title || "Sin título"}
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/admin/contenido/${row.original.id}`}
+                className="block truncate font-medium hover:text-primary"
+              >
+                {row.original.title || "Sin título"}
+              </Link>
+              <PresenceStack mode={{ kind: "entry", entryId: row.original.id }} size={20} max={3} />
+            </div>
             <p className="truncate text-xs text-muted-foreground">
               /{workspaceSlug}/blog/{row.original.slug}
             </p>

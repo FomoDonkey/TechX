@@ -1,8 +1,9 @@
 import { db } from "@/db/client";
+import { atomicClaimMany } from "@/db/dialect";
 import { entries } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { emit } from "@/webhooks/dispatcher";
-import { and, eq, lte } from "drizzle-orm";
+import { and, isNull, lte } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { requireCronAuth } from "../_auth";
 
@@ -17,16 +18,22 @@ export async function GET(req: Request) {
   // UPDATE...RETURNING garantiza que sólo emitimos webhooks por las filas que
   // efectivamente transicionaron a published (entre SELECT y UPDATE alguien
   // pudo cambiarlas a draft, archivar, etc.).
-  const due = await db
-    .update(entries)
-    .set({ status: "published", publishedAt: now, updatedAt: now })
-    .where(and(eq(entries.status, "scheduled"), lte(entries.scheduledAt, now)))
-    .returning({
-      id: entries.id,
-      workspaceId: entries.workspaceId,
-      slug: entries.slug,
-      title: entries.title,
-    });
+  // F9b: el cron sólo publica entries de main. Forks scheduled en una branch
+  // se publican vía merge — nunca por el cron global.
+  // Pattern H atomic claim batch: el SELECT FOR UPDATE adquiere row-level lock
+  // por entry candidata; la precondición exige status='scheduled' para evitar
+  // doble-publicación si otro cron concurrente las tocó entre SELECT y UPDATE.
+  const due = await atomicClaimMany<{
+    id: string;
+    workspaceId: string;
+    slug: string;
+    title: string;
+    status: string;
+  }>(entries, {
+    where: and(lte(entries.scheduledAt, now), isNull(entries.branchId))!,
+    precondition: (row) => row.status === "scheduled",
+    set: { status: "published", publishedAt: now, updatedAt: now },
+  });
 
   if (due.length === 0) return Response.json({ ok: true, published: 0 });
 

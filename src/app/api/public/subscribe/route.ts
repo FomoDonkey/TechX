@@ -17,6 +17,7 @@ import { db } from "@/db/client";
 import { workspaces } from "@/db/schema";
 import { consumeSubmitRateLimit } from "@/forms/rate-limit";
 import { hashIp } from "@/forms/submit";
+import { verifyAntiBot } from "@/lib/anti-bot";
 import { sendEmail } from "@/lib/email";
 import { subscribe } from "@/newsletter/subscribers";
 import { renderConfirmation } from "@/newsletter/templates";
@@ -38,6 +39,8 @@ type SubscribeBody = {
   source?: unknown;
   tags?: unknown;
   csm_t?: unknown;
+  /** Token Turnstile/hCaptcha si el sitio lo configura. Opcional. */
+  csm_captcha?: unknown;
   workspaceId?: unknown;
   [HONEYPOT_FIELD]?: unknown;
 };
@@ -127,6 +130,25 @@ export async function POST(req: Request) {
     );
   }
 
+  // Anti-bot (Turnstile/hCaptcha/BotID si están configurados; honeypot ya pasado).
+  // Si no hay provider configurado, devuelve `ok:true` con `provider:"none"`.
+  const captchaToken =
+    typeof body.csm_captcha === "string" && body.csm_captcha.length > 0 ? body.csm_captcha : null;
+  const antiBot = await verifyAntiBot({ token: captchaToken, ip });
+  if (!antiBot.ok) {
+    // 200 silencioso vs 403: si devolvemos 200 el bot no aprende. Si devolvemos
+    // 403 cuando el provider está activo, le decimos "tu token falló". Política
+    // F10a: 403 en caso de token presente pero inválido (humano con captcha
+    // expirado merece error claro), 200 silencioso si no envió token.
+    if (antiBot.reason === "missing_token") {
+      return NextResponse.json({ ok: true, message: "Gracias" }, { status: 200, headers: cors });
+    }
+    return NextResponse.json(
+      { error: "captcha_failed", provider: antiBot.provider },
+      { status: 403, headers: cors },
+    );
+  }
+
   if (typeof body.email !== "string" || !body.email.trim()) {
     return NextResponse.json({ error: "invalid_email" }, { status: 422, headers: cors });
   }
@@ -182,14 +204,14 @@ export async function POST(req: Request) {
     });
   }
 
+  // Anti email-enumeration: respondemos siempre con la misma forma neutra,
+  // independientemente de si el email ya estaba suscrito (created=false) o
+  // es nuevo (created=true con token). Si un atacante prueba emails para
+  // mapear suscriptores, siempre ve el mismo mensaje.
   return NextResponse.json(
     {
       ok: true,
-      created: result.created,
-      needsConfirmation: !!result.confirmationToken,
-      message: result.confirmationToken
-        ? "Te enviamos un email para confirmar tu suscripción."
-        : "Suscripción registrada.",
+      message: "Si tu email es válido, recibirás un correo de confirmación en breve.",
     },
     { status: 201, headers: cors },
   );

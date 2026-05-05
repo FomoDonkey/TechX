@@ -1,0 +1,123 @@
+# ============================================================
+# CSM — docker-compose principal
+# ============================================================
+#
+# Stack: Postgres 16 + CSM (la app Next.js).
+#
+# Diseño:
+#  - `restart: always` en ambos servicios → si reinicias el host, todo
+#    vuelve solo. Sobrevive a kernel panics, reboots, OOM kills.
+#  - Sin puertos hardcoded. Tú defines en `.env`:
+#      APP_PORT=3000          (puerto público de CSM en tu host)
+#      POSTGRES_PORT=          (vacío = NO expuesto al host, solo red interna)
+#  - Por defecto Postgres NO se expone al host — solo el contenedor de CSM
+#    le habla via red interna `csm_net`. Si necesitas conectarte desde tu
+#    máquina (psql, DBeaver, etc.), pones `POSTGRES_PORT=5432` en `.env`.
+#  - Healthcheck en Postgres → CSM solo arranca cuando la BD acepta
+#    conexiones, evitando flaps al arranque.
+#  - Volume `csm_pg_data` persistente — los datos sobreviven a `docker
+#    compose down`. Para borrar todo: `docker compose down -v`.
+#
+# Setup inicial:
+#   1. Copia `.env.docker.example` a `.env` y rellena AUTH_SECRET.
+#   2. `docker compose up -d`
+#   3. Abre http://localhost:${APP_PORT:-3000}
+#
+# Para usar MySQL o SQL Server (avanzado): mira `docker-compose.mysql.yml`
+# y `docker-compose.mssql.yml`. NOTA: la app actualmente solo conecta a
+# Postgres — esos compose levantan los contenedores de BD pero CSM no los
+# usa hasta que se complete el refactor multi-dialecto del ORM.
+
+name: csm
+
+services:
+  # ----------------------------------------------------------
+  # Postgres 16 — BD principal
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-csm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-csm}
+      # Tunables Postgres — opcionales, defaults razonables para dev/staging
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - csm_pg_data:/var/lib/postgresql/data
+    # Puerto: por defecto NO expuesto al host (más seguro). La BD vive
+    # solo en la red interna `csm_net` accesible para `csm`. Si necesitas
+    # conectarte desde fuera (psql, DBeaver), crea `docker-compose.override.yml`:
+    #   services:
+    #     postgres:
+    #       ports:
+    #         - "127.0.0.1:5432:5432"   # solo localhost del host
+    # O, si confías en tu firewall, "5432:5432" para escuchar en todas las IPs.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-csm} -d ${POSTGRES_DB:-csm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - csm_net
+
+  # ----------------------------------------------------------
+  # CSM — app Next.js
+  # ----------------------------------------------------------
+  csm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: csm:latest
+    restart: always
+    environment:
+      # Conexión a Postgres en la red interna (no usa el puerto público)
+      DATABASE_URL: postgres://${POSTGRES_USER:-csm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-csm}
+      # Secret obligatorio para sesiones + encryption de AI keys
+      AUTH_SECRET: ${AUTH_SECRET:?Define AUTH_SECRET en .env (genera uno con `openssl rand -hex 32`)}
+      # URL pública donde tu admin abrirá CSM
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      # Email transactional (opcional — sin esto, magic-link sale por consola)
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-CSM <noreply@example.com>}
+      # AI providers (opcionales — keys también editables desde admin/ajustes/ia)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      # Stripe (opcional — para memberships)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Storage (opcional — si quieres Vercel Blob)
+      BLOB_READ_WRITE_TOKEN: ${BLOB_READ_WRITE_TOKEN:-}
+      # Cron jobs internos (Vercel cron usa esto)
+      CRON_SECRET: ${CRON_SECRET:-}
+      # Node tunables
+      NODE_OPTIONS: "--max-old-space-size=512"
+    # Por seguridad bindea solo a la IP/hostname que tú definas. Patrones:
+    #   APP_HOST_BIND=127.0.0.1   APP_PORT=3000  → solo accesible vía localhost del host (típico tras Caddy/Nginx/Traefik)
+    #   APP_HOST_BIND=0.0.0.0     APP_PORT=3000  → accesible desde toda la red (CUIDADO: usa firewall)
+    #   APP_HOST_BIND=10.0.0.5    APP_PORT=8080  → bind a una IP específica del host
+    ports:
+      - "${APP_HOST_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - csm_net
+    # En producción no necesitas montar volumes — el código está dentro
+    # de la imagen. Si quieres mount-bind para hot-reload en dev, mira
+    # `docker-compose.dev.yml` (no incluido por defecto).
+
+# ============================================================
+# Networks & volumes
+# ============================================================
+networks:
+  csm_net:
+    driver: bridge
+
+volumes:
+  csm_pg_data:
+    driver: local

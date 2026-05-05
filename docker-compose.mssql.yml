@@ -1,0 +1,62 @@
+# ============================================================
+# CSM — Override para Microsoft SQL Server 2022 (BD adicional)
+# ============================================================
+#
+# ⚠️  IMPORTANTE — LIMITACIÓN ACTUAL:
+#
+#     CSM (la app) **todavía no soporta SQL Server** server-side. Su
+#     ORM (Drizzle) ni siquiera tiene driver oficial para MSSQL — para
+#     soportarlo habría que migrar a otro ORM (Prisma) o usar Knex.js
+#     directamente. Las features avanzadas (full-text, presence en
+#     tiempo real con LISTEN/NOTIFY, vector search con pgvector) tendrían
+#     que reescribirse o bajar a stubs.
+#
+#     Este compose levanta SQL Server 2022 en un contenedor PARALELO
+#     (red interna `csm_net`, volumen propio). Sirve si:
+#       (a) Tu organización requiere SQL Server y vas a integrar OTRA
+#           aplicación con él.
+#       (b) Estás preparando la migración multi-dialecto.
+#
+#     Para CSM en sí, sigue usando `docker-compose.yml` (Postgres).
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.mssql.yml up -d
+#
+# Notas de licencia:
+#   - La imagen `mssql/server:2022-latest` requiere aceptar EULA con
+#     `ACCEPT_EULA=Y`. Edición Developer es free para dev/test pero
+#     para producción necesitas Express, Standard o Enterprise license.
+#   - SA_PASSWORD debe cumplir la política de complejidad de SQL Server:
+#     mínimo 8 chars, mayúscula + minúscula + número + símbolo.
+#   - SQL Server consume ~2GB RAM mínimo en runtime — más que MySQL/Postgres.
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: always
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Define MSSQL_SA_PASSWORD en .env (min 8 chars, may+min+num+símbolo)}
+      MSSQL_PID: ${MSSQL_PID:-Developer}  # Developer | Express | Standard | Enterprise
+    volumes:
+      - csm_mssql_data:/var/opt/mssql
+    # MSSQL no tiene healthcheck oficial via CMD simple. Usamos sqlcmd
+    # del propio contenedor (path varía entre versiones).
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >-
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa
+          -P "$$MSSQL_SA_PASSWORD" -Q "SELECT 1" -C -No
+          || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa
+          -P "$$MSSQL_SA_PASSWORD" -Q "SELECT 1"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - csm_net
+
+volumes:
+  csm_mssql_data:
+    driver: local

@@ -13,6 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db } from "@/db/client";
+import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import {
   type Subscriber,
   campaignRecipients,
@@ -21,7 +22,7 @@ import {
 } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { emitAsync } from "@/webhooks/dispatcher";
-import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { tokens } from "./tokens";
 
 export type SubscribePayload = {
@@ -78,17 +79,18 @@ export async function subscribe(input: SubscribePayload): Promise<SubscribeResul
       if (input.name && !existing.name) updates.name = input.name;
       if (input.locale && existing.locale !== input.locale) updates.locale = input.locale;
       if (mergedTags) updates.tags = mergedTags;
+      await db.update(subscribers).set(updates).where(eq(subscribers.id, existing.id));
       const [updated] = await db
-        .update(subscribers)
-        .set(updates)
+        .select()
+        .from(subscribers)
         .where(eq(subscribers.id, existing.id))
-        .returning();
+        .limit(1);
       return { ok: true, subscriber: updated ?? existing, created: false };
     }
 
     // Reactivación: cambia status, deja confirmedAt nulo (requiere doble opt-in)
     const tagMerge = mergeTags(existing.tags, input.tags ?? null);
-    const [reactivated] = await db
+    await db
       .update(subscribers)
       .set({
         status: "active",
@@ -101,8 +103,12 @@ export async function subscribe(input: SubscribePayload): Promise<SubscribeResul
         confirmedAt: input.preConfirmed ? new Date() : null,
         updatedAt: new Date(),
       })
+      .where(eq(subscribers.id, existing.id));
+    const [reactivated] = await db
+      .select()
+      .from(subscribers)
       .where(eq(subscribers.id, existing.id))
-      .returning();
+      .limit(1);
     if (!reactivated) return { ok: false, error: "db_error" };
 
     if (input.preConfirmed) {
@@ -118,30 +124,25 @@ export async function subscribe(input: SubscribePayload): Promise<SubscribeResul
     return { ok: true, subscriber: reactivated, created: false, confirmationToken: token };
   }
 
-  // Inserción nueva
-  const unsubscribeToken = tokens.signUnsub(randomUUID(), input.workspaceId); // se reescribe tras conocer id
-  const [inserted] = await db
-    .insert(subscribers)
-    .values({
-      workspaceId: input.workspaceId,
-      email,
-      name: input.name ?? null,
-      locale: input.locale ?? "es",
-      source: input.source ?? null,
-      tags: input.tags ?? null,
-      status: "active",
-      confirmedAt: input.preConfirmed ? new Date() : null,
-      unsubscribeToken,
-    })
-    .returning();
+  // Inserción nueva. Generamos id pre-INSERT (uuid v4) para poder firmar el
+  // unsubscribeToken con el id real desde el inicio — evita la ventana de
+  // race donde una request paralela leía la fila con token apuntando a un
+  // sid placeholder inexistente.
+  const newId = randomUUID();
+  const unsubscribeToken = tokens.signUnsub(newId, input.workspaceId);
+  const inserted = (await insertReturning(subscribers, {
+    id: newId,
+    workspaceId: input.workspaceId,
+    email,
+    name: input.name ?? null,
+    locale: input.locale ?? "es",
+    source: input.source ?? null,
+    tags: input.tags ?? null,
+    status: "active",
+    confirmedAt: input.preConfirmed ? new Date() : null,
+    unsubscribeToken,
+  })) as Subscriber;
   if (!inserted) return { ok: false, error: "db_error" };
-
-  // Reescribimos unsub token con id real (para que sea verificable y único)
-  const finalUnsub = tokens.signUnsub(inserted.id, input.workspaceId);
-  await db
-    .update(subscribers)
-    .set({ unsubscribeToken: finalUnsub })
-    .where(eq(subscribers.id, inserted.id));
 
   emitAsync({
     workspaceId: input.workspaceId,
@@ -157,7 +158,7 @@ export async function subscribe(input: SubscribePayload): Promise<SubscribeResul
     });
     return {
       ok: true,
-      subscriber: { ...inserted, unsubscribeToken: finalUnsub },
+      subscriber: inserted,
       created: true,
     };
   }
@@ -165,7 +166,7 @@ export async function subscribe(input: SubscribePayload): Promise<SubscribeResul
   const confirmationToken = await issueConfirmationToken(input.workspaceId, inserted.id);
   return {
     ok: true,
-    subscriber: { ...inserted, unsubscribeToken: finalUnsub },
+    subscriber: inserted,
     created: true,
     confirmationToken,
   };
@@ -225,11 +226,15 @@ export async function confirmSubscription(token: string): Promise<{
     .set({ confirmedAt: now })
     .where(eq(subscriberConfirmations.id, conf.id));
 
-  const [sub] = await db
+  await db
     .update(subscribers)
     .set({ confirmedAt: now, status: "active", updatedAt: now })
+    .where(eq(subscribers.id, conf.subscriberId));
+  const [sub] = await db
+    .select()
+    .from(subscribers)
     .where(eq(subscribers.id, conf.subscriberId))
-    .returning();
+    .limit(1);
   if (!sub) return { ok: false, reason: "db_error" };
 
   emitAsync({
@@ -274,7 +279,7 @@ export async function unsubscribe(input: {
   }
   if (!sid || !wsId) return { ok: false, error: "missing_args" };
 
-  const [sub] = await db
+  await db
     .update(subscribers)
     .set({
       status: "unsubscribed",
@@ -282,8 +287,12 @@ export async function unsubscribe(input: {
       unsubscribeReason: input.reason ?? null,
       updatedAt: new Date(),
     })
+    .where(and(eq(subscribers.id, sid), eq(subscribers.workspaceId, wsId)));
+  const [sub] = await db
+    .select()
+    .from(subscribers)
     .where(and(eq(subscribers.id, sid), eq(subscribers.workspaceId, wsId)))
-    .returning();
+    .limit(1);
   if (!sub) return { ok: false, error: "not_found" };
 
   // Cancelar drips activos
@@ -310,14 +319,18 @@ export async function recordBounce(
   reason?: string,
 ): Promise<void> {
   if (!db) return;
-  const [sub] = await db
+  await db
     .update(subscribers)
     .set({
       bounceCount: sql`coalesce(${subscribers.bounceCount}, 0) + 1`,
       updatedAt: new Date(),
     })
+    .where(and(eq(subscribers.id, subscriberId), eq(subscribers.workspaceId, workspaceId)));
+  const [sub] = await db
+    .select()
+    .from(subscribers)
     .where(and(eq(subscribers.id, subscriberId), eq(subscribers.workspaceId, workspaceId)))
-    .returning();
+    .limit(1);
   if (!sub) return;
   // 3 bounces consecutivos → marca como bounced
   if ((sub.bounceCount ?? 0) >= 3 && sub.status !== "bounced") {
@@ -341,15 +354,19 @@ export async function updatePreferences(input: {
   if (!db) return { ok: false, error: "db_error" };
   const v = tokens.verifyPrefs(input.token);
   if (!v) return { ok: false, error: "invalid_token" };
-  const [sub] = await db
+  await db
     .update(subscribers)
     .set({
       preferences: input.preferences ?? null,
       tags: input.tags ?? null,
       updatedAt: new Date(),
     })
+    .where(and(eq(subscribers.id, v.sid), eq(subscribers.workspaceId, v.ws)));
+  const [sub] = await db
+    .select()
+    .from(subscribers)
     .where(and(eq(subscribers.id, v.sid), eq(subscribers.workspaceId, v.ws)))
-    .returning();
+    .limit(1);
   if (!sub) return { ok: false, error: "not_found" };
   return { ok: true, subscriber: sub };
 }
@@ -438,11 +455,10 @@ export async function getSubscriberByEmail(
 
 export async function deleteSubscribers(workspaceId: string, ids: string[]): Promise<number> {
   if (!db || ids.length === 0) return 0;
-  const result = await db
-    .delete(subscribers)
-    .where(and(eq(subscribers.workspaceId, workspaceId), inArray(subscribers.id, ids)))
-    .returning({ id: subscribers.id });
-  return result.length;
+  return await deleteReturningCount(
+    subscribers,
+    and(eq(subscribers.workspaceId, workspaceId), inArray(subscribers.id, ids))!,
+  );
 }
 
 export async function tagSubscribers(
@@ -476,12 +492,16 @@ export async function tagSubscribers(
 
 export async function bulkUnsubscribe(workspaceId: string, ids: string[]): Promise<number> {
   if (!db || ids.length === 0) return 0;
-  const rows = await db
+  // Pattern C cross-dialect: SELECT-then-UPDATE para obtener count de filas
+  // afectadas (MySQL no soporta UPDATE...RETURNING).
+  const where = and(eq(subscribers.workspaceId, workspaceId), inArray(subscribers.id, ids))!;
+  const matched = await db.select({ id: subscribers.id }).from(subscribers).where(where);
+  if (matched.length === 0) return 0;
+  await db
     .update(subscribers)
     .set({ status: "unsubscribed", unsubscribedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(subscribers.workspaceId, workspaceId), inArray(subscribers.id, ids)))
-    .returning({ id: subscribers.id });
-  return rows.length;
+    .where(where);
+  return matched.length;
 }
 
 // ============================================================

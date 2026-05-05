@@ -5,6 +5,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@/db/client";
+import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import {
   type Form,
   type FormVersion,
@@ -13,7 +14,7 @@ import {
   forms,
   submissions,
 } from "@/db/schema";
-import { and, count, desc, eq, gte, ilike, inArray, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { FormSchema, FormSettings } from "./types";
 
 export type FormListItem = Form & {
@@ -55,13 +56,23 @@ export async function getFormBySlug(workspaceId: string, slug: string): Promise<
   return row ?? null;
 }
 
-/** Versión "pública" — busca por slug sin filtrar por workspace. Para el renderer público. */
-export async function getPublishedFormBySlug(slug: string): Promise<Form | null> {
+/**
+ * Versión "pública" — busca por (workspaceId, slug) en estado published.
+ * IMPORTANTE: requiere `workspaceId` para evitar cross-tenant lookup. Antes
+ * un slug "contact" en wsA podía resolver al form de wsB si llegaban primero.
+ * El caller debe resolver el workspace por host antes de invocar.
+ */
+export async function getPublishedFormBySlug(
+  workspaceId: string,
+  slug: string,
+): Promise<Form | null> {
   if (!db) return null;
   const [row] = await db
     .select()
     .from(forms)
-    .where(and(eq(forms.slug, slug), eq(forms.status, "published")))
+    .where(
+      and(eq(forms.workspaceId, workspaceId), eq(forms.slug, slug), eq(forms.status, "published")),
+    )
     .limit(1);
   return row ?? null;
 }
@@ -81,20 +92,19 @@ export async function createForm(input: {
     ...(input.settings ?? {}),
     honeypotFieldName: honeypotName,
   };
-  const [row] = await db
-    .insert(forms)
-    .values({
-      workspaceId: input.workspaceId,
-      name: input.name,
-      slug: input.slug,
-      description: input.description ?? null,
-      schema: input.schema as unknown as object,
-      settings: settings as unknown as object,
-      status: "draft",
-      version: 1,
-      createdById: input.createdById ?? null,
-    })
-    .returning();
+  const newId = crypto.randomUUID();
+  const row = (await insertReturning(forms, {
+    id: newId,
+    workspaceId: input.workspaceId,
+    name: input.name,
+    slug: input.slug,
+    description: input.description ?? null,
+    schema: input.schema as unknown as object,
+    settings: settings as unknown as object,
+    status: "draft",
+    version: 1,
+    createdById: input.createdById ?? null,
+  })) as Form;
   if (!row) throw new Error("No se pudo crear el form");
   return row;
 }
@@ -125,11 +135,15 @@ export async function updateForm(
   if (patch.successMessage !== undefined) setObj.successMessage = patch.successMessage;
   if (patch.redirectUrl !== undefined) setObj.redirectUrl = patch.redirectUrl;
   if (patch.notificationEmails !== undefined) setObj.notificationEmails = patch.notificationEmails;
-  const [row] = await db
+  await db
     .update(forms)
     .set(setObj)
+    .where(and(eq(forms.workspaceId, workspaceId), eq(forms.id, id)));
+  const [row] = await db
+    .select()
+    .from(forms)
     .where(and(eq(forms.workspaceId, workspaceId), eq(forms.id, id)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
@@ -150,22 +164,26 @@ export async function publishForm(
       schema: (current.schema ?? { fields: [], steps: [] }) as unknown as object,
       publishedById: publishedById ?? null,
     });
-    const [row] = await tx
+    await tx
       .update(forms)
       .set({ status: "published", version: newVersion, updatedAt: new Date() })
+      .where(and(eq(forms.workspaceId, workspaceId), eq(forms.id, id)));
+    const [row] = await tx
+      .select()
+      .from(forms)
       .where(and(eq(forms.workspaceId, workspaceId), eq(forms.id, id)))
-      .returning();
+      .limit(1);
     return row ?? null;
   });
 }
 
 export async function deleteForm(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const result = await db
-    .delete(forms)
-    .where(and(eq(forms.workspaceId, workspaceId), eq(forms.id, id)))
-    .returning({ id: forms.id });
-  return result.length > 0;
+  const deleted = await deleteReturningCount(
+    forms,
+    and(eq(forms.workspaceId, workspaceId), eq(forms.id, id))!,
+  );
+  return deleted > 0;
 }
 
 export async function archiveForm(workspaceId: string, id: string): Promise<Form | null> {
@@ -278,24 +296,27 @@ export async function setSubmissionStatus(
   status: Submission["status"],
 ): Promise<Submission | null> {
   if (!db) return null;
-  const [row] = await db
+  await db
     .update(submissions)
     .set({
       status,
       processedAt: status === "processed" ? new Date() : undefined,
     })
+    .where(and(eq(submissions.workspaceId, workspaceId), eq(submissions.id, id)));
+  const [row] = await db
+    .select()
+    .from(submissions)
     .where(and(eq(submissions.workspaceId, workspaceId), eq(submissions.id, id)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
 export async function deleteSubmissions(workspaceId: string, ids: string[]): Promise<number> {
   if (!db || ids.length === 0) return 0;
-  const result = await db
-    .delete(submissions)
-    .where(and(eq(submissions.workspaceId, workspaceId), inArray(submissions.id, ids)))
-    .returning({ id: submissions.id });
-  return result.length;
+  return await deleteReturningCount(
+    submissions,
+    and(eq(submissions.workspaceId, workspaceId), inArray(submissions.id, ids))!,
+  );
 }
 
 export async function countSubmissionsByForm(workspaceId: string): Promise<Record<string, number>> {

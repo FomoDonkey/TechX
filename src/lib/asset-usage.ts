@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { entries } from "@/db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 export type AssetUsage = {
   entryId: string;
@@ -29,7 +29,15 @@ export async function findAssetUsages(
       status: entries.status,
     })
     .from(entries)
-    .where(and(eq(entries.workspaceId, workspaceId), sql`${entries.body}::text ILIKE ${needle}`))
+    .where(
+      and(
+        eq(entries.workspaceId, workspaceId),
+        // F9b: el guard de "asset en uso" mira sólo entries de main — borrar un asset
+        // mientras una branch lo usa es decisión consciente del autor de la branch.
+        isNull(entries.branchId),
+        sql`${entries.body}::text ILIKE ${needle}`,
+      ),
+    )
     .limit(limit);
   return rows.map((r) => ({ ...r, status: r.status as string }));
 }

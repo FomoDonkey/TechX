@@ -1,0 +1,58 @@
+# Dependencies (se reinstalan dentro de la imagen)
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Next build artifacts
+.next
+out
+build
+dist
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+
+# Testing
+coverage
+.nyc_output
+
+# Env (NO meter secretos en la imagen)
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Git / CI
+.git
+.github
+.gitignore
+
+# Docs / md sueltos
+README.md
+*.md
+docs
+
+# Claude / IA tooling
+.claude
+tasks
+memory
+plans
+
+# Imágenes/screenshots de testing local
+*.png
+*.jpg
+*.jpeg
+!public/**
+
+# Tipos auto-generados que se regeneran en build
+.next/types
+
+# Docker stuff (no necesario dentro de la imagen)
+docker-compose*.yml
+Dockerfile*
+.dockerignore

@@ -28,7 +28,8 @@ import {
   terms,
   webhooks,
 } from "@/db/schema";
-import { and, asc, desc, eq, ilike, lt, sql } from "drizzle-orm";
+import { iLike as ilike } from "@/db/dialect";
+import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   GraphQLBoolean,
   GraphQLEnumType,
@@ -171,6 +172,7 @@ const EntryStatusEnum = new GraphQLEnumType({
   values: {
     draft: {},
     review: {},
+    approved: {},
     scheduled: {},
     published: {},
     archived: {},
@@ -474,7 +476,8 @@ const QueryType = new GraphQLObjectType({
         if (!db || !ctx.apiKey)
           return { nodes: [], pageInfo: { hasMore: false, nextCursor: null, count: 0 } };
         const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
-        const conds = [eq(entries.workspaceId, ctx.apiKey.workspaceId)];
+        // F9b: GraphQL público nunca devuelve forks de branches.
+        const conds = [eq(entries.workspaceId, ctx.apiKey.workspaceId), isNull(entries.branchId)];
         if (args.status) conds.push(eq(entries.status, args.status));
         if (args.collectionId) conds.push(eq(entries.collectionId, args.collectionId));
         if (args.locale) conds.push(eq(entries.locale, args.locale));
@@ -512,7 +515,8 @@ const QueryType = new GraphQLObjectType({
         if (!args.id && !args.slug) {
           throw new GraphQLError("Provide id or slug");
         }
-        const conds = [eq(entries.workspaceId, ctx.apiKey.workspaceId)];
+        // F9b: GraphQL público nunca devuelve forks de branches.
+        const conds = [eq(entries.workspaceId, ctx.apiKey.workspaceId), isNull(entries.branchId)];
         if (args.id) conds.push(eq(entries.id, args.id));
         else if (args.slug) conds.push(eq(entries.slug, args.slug));
         const [row] = await db

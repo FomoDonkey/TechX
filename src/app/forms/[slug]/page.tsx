@@ -1,10 +1,19 @@
 import { getPublishedFormBySlug } from "@/forms/lib";
 import type { FormSchema, FormSettings } from "@/forms/types";
+import { resolveWorkspaceIdByHost } from "@/redirects/runtime";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { PublicFormClient } from "./client";
 
 export const dynamic = "force-dynamic";
+
+async function resolveFormForRequest(slug: string) {
+  const h = await headers();
+  const host = h.get("host") ?? "";
+  const workspaceId = await resolveWorkspaceIdByHost(host);
+  return workspaceId ? getPublishedFormBySlug(workspaceId, slug) : null;
+}
 
 export async function generateMetadata({
   params,
@@ -12,7 +21,7 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const form = await getPublishedFormBySlug(slug);
+  const form = await resolveFormForRequest(slug);
   if (!form) return { title: "Form no encontrado" };
   return {
     title: `${form.name} · CSM`,
@@ -26,7 +35,7 @@ export default async function PublicFormPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const form = await getPublishedFormBySlug(slug);
+  const form = await resolveFormForRequest(slug);
   if (!form) notFound();
   const schema = (form.schema ?? { fields: [], steps: [] }) as FormSchema;
   const settings = (form.settings ?? {}) as FormSettings;

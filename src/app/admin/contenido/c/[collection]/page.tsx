@@ -11,7 +11,15 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 type SP = { status?: string; q?: string; page?: string };
-const VALID_STATUSES = new Set(["all", "draft", "review", "scheduled", "published", "archived"]);
+const VALID_STATUSES = new Set([
+  "all",
+  "draft",
+  "review",
+  "approved",
+  "scheduled",
+  "published",
+  "archived",
+]);
 
 export async function generateMetadata({
   params,
@@ -51,6 +59,7 @@ export default async function CollectionContentPage({
     | "all"
     | "draft"
     | "review"
+    | "approved"
     | "scheduled"
     | "published"
     | "archived";

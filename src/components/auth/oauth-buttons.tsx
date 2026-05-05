@@ -2,6 +2,7 @@
 
 import { authClient } from "@/auth/client";
 import { Button } from "@/components/ui/button";
+import { safeInternalPath } from "@/lib/safe-redirect";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -60,7 +61,9 @@ export function OAuthButtons({
   async function handle(provider: "google" | "github") {
     try {
       setLoading(provider);
-      await authClient.signIn.social({ provider, callbackURL: callbackURL ?? "/admin" });
+      // Anti open-redirect: callbackURL pasa por whitelist interna.
+      const safeCb = safeInternalPath(callbackURL, "/admin");
+      await authClient.signIn.social({ provider, callbackURL: safeCb });
     } catch (err) {
       toast.error(`No se pudo iniciar sesión con ${provider}`);
       console.error(err);

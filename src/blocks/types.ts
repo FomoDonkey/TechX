@@ -40,6 +40,11 @@ export type RenderContext = {
   viewer?: ViewerContext;
   /** Si true, ignoramos paywall + audience (preview en admin/builder). */
   bypassGates?: boolean;
+  /** Mapa testKey → variantId resuelto sticky para esta request (F8c A/B). */
+  abMap?: Map<string, { testId: string; variantId: string }>;
+  /** Si true, el render envuelve cada bloque con data-csm-block-id para
+   * habilitar la toolbar de Live-Edit (F8c). */
+  editMode?: boolean;
 };
 
 export type BlockKind = string;

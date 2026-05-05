@@ -10,6 +10,7 @@
  */
 
 import { db } from "@/db/client";
+import { deleteReturningCount, insertReturning, upsertReturning } from "@/db/dialect";
 import { type Membership, type Tier, memberEvents, memberships, tiers } from "@/db/schema";
 import { slugify, withSuffix } from "@/lib/slug";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -91,23 +92,22 @@ export async function createTier(workspaceId: string, input: CreateTierInput): P
   if (!db) throw new Error("DB no disponible");
   const slug = await ensureUniqueTierSlug(workspaceId, input.slug ?? input.name);
   const isFree = input.isFree ?? input.priceCents === 0;
-  const [row] = await db
-    .insert(tiers)
-    .values({
-      workspaceId,
-      name: input.name,
-      slug,
-      description: input.description ?? null,
-      priceCents: input.priceCents,
-      currency: input.currency ?? "eur",
-      interval: input.interval ?? "month",
-      trialDays: input.trialDays ?? 0,
-      features: input.features ?? [],
-      isActive: input.isActive ?? true,
-      isFree,
-      sortOrder: input.sortOrder ?? 0,
-    })
-    .returning();
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(tiers, {
+    id,
+    workspaceId,
+    name: input.name,
+    slug,
+    description: input.description ?? null,
+    priceCents: input.priceCents,
+    currency: input.currency ?? "eur",
+    interval: input.interval ?? "month",
+    trialDays: input.trialDays ?? 0,
+    features: input.features ?? [],
+    isActive: input.isActive ?? true,
+    isFree,
+    sortOrder: input.sortOrder ?? 0,
+  })) as Tier;
   if (!row) throw new Error("No se pudo crear el tier");
   return row;
 }
@@ -140,21 +140,25 @@ export async function updateTier(
     updates.slug = await ensureUniqueTierSlug(workspaceId, patch.slug);
   }
 
-  const [row] = await db
+  await db
     .update(tiers)
     .set(updates)
+    .where(and(eq(tiers.workspaceId, workspaceId), eq(tiers.id, id)));
+  const [row] = await db
+    .select()
+    .from(tiers)
     .where(and(eq(tiers.workspaceId, workspaceId), eq(tiers.id, id)))
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
 export async function deleteTier(workspaceId: string, id: string): Promise<boolean> {
   if (!db) return false;
-  const deleted = await db
-    .delete(tiers)
-    .where(and(eq(tiers.workspaceId, workspaceId), eq(tiers.id, id)))
-    .returning({ id: tiers.id });
-  return deleted.length > 0;
+  const count = await deleteReturningCount(
+    tiers,
+    and(eq(tiers.workspaceId, workspaceId), eq(tiers.id, id))!,
+  );
+  return count > 0;
 }
 
 // ============================================================
@@ -310,9 +314,9 @@ export async function grantMembership(input: GrantMembershipInput): Promise<Memb
 
   // Atomic upsert por (workspaceId, email) — evita race entre dos webhooks
   // concurrentes que ambos hacen "select then insert" y chocan con unique.
-  const [row] = await db
-    .insert(memberships)
-    .values({
+  const row = (await upsertReturning(memberships, {
+    values: {
+      id: crypto.randomUUID(),
       workspaceId: input.workspaceId,
       email,
       name: input.name ?? null,
@@ -326,12 +330,11 @@ export async function grantMembership(input: GrantMembershipInput): Promise<Memb
       trialEnd: input.trialEnd ?? null,
       source: input.source ?? "manual",
       metadata: input.metadata ?? null,
-    })
-    .onConflictDoUpdate({
-      target: [memberships.workspaceId, memberships.email],
-      set: updateSet,
-    })
-    .returning();
+    },
+    target: [memberships.workspaceId, memberships.email],
+    uniqueKey: { workspaceId: input.workspaceId, email },
+    set: updateSet,
+  })) as Membership;
   if (!row) throw new Error("No se pudo upsertear la membresía");
   return row;
 }
@@ -359,13 +362,19 @@ export async function updateMembershipFromSubscription(input: {
   if (input.canceledAt !== undefined) updates.canceledAt = input.canceledAt;
   if (input.trialEnd !== undefined) updates.trialEnd = input.trialEnd;
 
-  const [row] = await db
+  await db
     .update(memberships)
     .set(updates)
     .where(
       and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.id, input.membershipId)),
+    );
+  const [row] = await db
+    .select()
+    .from(memberships)
+    .where(
+      and(eq(memberships.workspaceId, input.workspaceId), eq(memberships.id, input.membershipId)),
     )
-    .returning();
+    .limit(1);
   return row ?? null;
 }
 
@@ -409,20 +418,29 @@ export async function recordMemberEvent(input: {
 }): Promise<{ inserted: boolean; id: string | null }> {
   if (!db) return { inserted: false, id: null };
   try {
-    const result = await db
-      .insert(memberEvents)
-      .values({
-        workspaceId: input.workspaceId,
-        membershipId: input.membershipId ?? null,
-        email: input.email ?? null,
-        type: input.type,
-        stripeEventId: input.stripeEventId ?? null,
-        data: input.data ?? null,
-      })
-      .onConflictDoNothing({ target: memberEvents.stripeEventId })
-      .returning({ id: memberEvents.id });
-    if (result.length === 0) return { inserted: false, id: null };
-    return { inserted: true, id: result[0]?.id ?? null };
+    // Si viene stripeEventId, primero comprobamos si ya existe (dedup explícito
+    // cross-dialect). Si no viene, insertamos siempre. Esto sustituye al
+    // `onConflictDoNothing.returning()` que era Postgres-only.
+    const stripeEventId = input.stripeEventId ?? null;
+    if (stripeEventId) {
+      const existing = await db
+        .select({ id: memberEvents.id })
+        .from(memberEvents)
+        .where(eq(memberEvents.stripeEventId, stripeEventId))
+        .limit(1);
+      if (existing.length > 0) return { inserted: false, id: null };
+    }
+    const id = crypto.randomUUID();
+    await db.insert(memberEvents).values({
+      id,
+      workspaceId: input.workspaceId,
+      membershipId: input.membershipId ?? null,
+      email: input.email ?? null,
+      type: input.type,
+      stripeEventId,
+      data: input.data ?? null,
+    });
+    return { inserted: true, id };
   } catch (err) {
     console.error("recordMemberEvent failed", err);
     return { inserted: false, id: null };

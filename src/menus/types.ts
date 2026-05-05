@@ -7,6 +7,7 @@
  * el endpoint público; "link" lleva la URL ya resuelta y "external" la mantiene.
  */
 
+import { httpUrlSchema } from "@/lib/safe-url";
 import { z } from "zod";
 
 export type MenuItemType = "link" | "page" | "collection" | "external" | "divider" | "heading";
@@ -112,7 +113,7 @@ export const MenuItemSchema: MenuItemSchemaType = z.lazy(() =>
     }),
     MenuItemBaseSchema.extend({
       type: z.literal("external"),
-      href: z.string().url().max(2048),
+      href: httpUrlSchema(2048),
       children: z.array(z.never()).max(0).optional(),
     }),
     MenuItemBaseSchema.extend({

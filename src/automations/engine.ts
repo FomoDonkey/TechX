@@ -20,6 +20,7 @@
  */
 
 import { db } from "@/db/client";
+import { atomicClaim, insertReturning } from "@/db/dialect";
 import { type Automation, automationRuns, automationSteps, automations } from "@/db/schema";
 import { and, eq, lte, or, sql } from "drizzle-orm";
 import { executeStep } from "./actions";
@@ -57,21 +58,20 @@ export async function startRun(input: StartRunInput): Promise<string | null> {
     return null;
   }
 
-  const [run] = await db
-    .insert(automationRuns)
-    .values({
-      workspaceId: input.workspaceId,
-      automationId: input.automationId,
-      triggerEvent: input.triggerEvent,
-      triggerPayload: (input.triggerPayload ?? null) as never,
-      status: "pending",
-      nextStepIndex: 0,
-      context: {
-        trigger: { event: input.triggerEvent, payload: input.triggerPayload },
-        steps: [],
-      } as never,
-    })
-    .returning({ id: automationRuns.id });
+  const runId = crypto.randomUUID();
+  const run = (await insertReturning(automationRuns, {
+    id: runId,
+    workspaceId: input.workspaceId,
+    automationId: input.automationId,
+    triggerEvent: input.triggerEvent,
+    triggerPayload: (input.triggerPayload ?? null) as never,
+    status: "pending",
+    nextStepIndex: 0,
+    context: {
+      trigger: { event: input.triggerEvent, payload: input.triggerPayload },
+      steps: [],
+    } as never,
+  })) as { id: string };
 
   if (!run) return null;
 
@@ -132,17 +132,12 @@ export async function runStepsLoop(runId: string, autoCached?: Automation): Prom
 
   // Claim atómico: solo si el run sigue en "pending" o "running" (resume tras crash).
   // Esto previene que dos workers (startRun fire-and-forget + cron) procesen el mismo run.
-  const claimed = await db
-    .update(automationRuns)
-    .set({ status: "running", startedAt: run.startedAt ?? new Date() })
-    .where(
-      and(
-        eq(automationRuns.id, runId),
-        or(eq(automationRuns.status, "pending"), eq(automationRuns.status, "running")),
-      ),
-    )
-    .returning({ id: automationRuns.id });
-  if (claimed.length === 0) return;
+  const claimed = await atomicClaim<{ id: string; status: string }>(automationRuns, {
+    where: eq(automationRuns.id, runId),
+    precondition: (row) => row.status === "pending" || row.status === "running",
+    set: { status: "running", startedAt: run.startedAt ?? new Date() },
+  });
+  if (!claimed) return;
 
   const startedAt = Date.now();
   let totalExecuted = 0;
@@ -306,17 +301,16 @@ async function persistStepStart(
   name: string | undefined,
 ): Promise<string> {
   if (!db) return "";
-  const [row] = await db
-    .insert(automationSteps)
-    .values({
-      runId,
-      stepIndex,
-      type,
-      name: name ?? null,
-      status: "running",
-      startedAt: new Date(),
-    })
-    .returning({ id: automationSteps.id });
+  const id = crypto.randomUUID();
+  const row = (await insertReturning(automationSteps, {
+    id,
+    runId,
+    stepIndex,
+    type,
+    name: name ?? null,
+    status: "running",
+    startedAt: new Date(),
+  })) as { id: string };
   return row?.id ?? "";
 }
 

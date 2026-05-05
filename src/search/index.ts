@@ -8,8 +8,10 @@
 
 import { embed, vectorToSql } from "@/ai/embeddings";
 import { db } from "@/db/client";
+import { cosineDistance, distanceToSimilarity } from "@/db/dialect";
 import { type Entry, entries, members, users } from "@/db/schema";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { ftsSearch as ftsSearchAdapter } from "@/search/fts";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
 
 export type SearchHit = {
   id: string;
@@ -45,52 +47,40 @@ export type SearchOpts = {
 const RRF_K = 60; // estándar Cormack et al.
 
 /**
- * BM25 (FTS) con ts_rank_cd + ts_headline para snippets.
- * Usa configuración 'spanish' por defecto. Si la query es corta, websearch_to_tsquery + plainto fallback.
+ * BM25 (FTS) cross-dialect — delega al adapter en `@/search/fts/`.
+ *
+ * Postgres: `tsvector` + `ts_rank_cd` + `ts_headline` (snippets nativos).
+ * MySQL:    `MATCH AGAINST IN BOOLEAN MODE` + snippets generados en JS.
+ *
+ * El adapter ya devuelve `snippet` HTML-safe — aquí solo añadimos los campos
+ * extra de `SearchHit` (vectorScore=0, score=ftsRank) para compatibilidad con
+ * el ranking RRF de `hybridSearch`.
  */
 export async function ftsSearch(opts: SearchOpts): Promise<SearchHit[]> {
   if (!db) return [];
-  const q = (opts.query ?? "").trim();
-  if (!q) return [];
-
   const limit = opts.limit ?? 10;
-  // websearch_to_tsquery soporta "phrase" "OR" "-excluded"; cae limpio si la query es vacía.
-  const tsq = sql`websearch_to_tsquery('spanish', ${q})`;
-  const docVec = sql`(setweight(to_tsvector('spanish', coalesce(${entries.title}, '')), 'A') || setweight(to_tsvector('spanish', coalesce(${entries.bodyText}, '')), 'B') || setweight(to_tsvector('spanish', coalesce(${entries.excerpt}, '')), 'C'))`;
-
-  const conds = [eq(entries.workspaceId, opts.workspaceId)];
-  if (opts.scope === "published") conds.push(eq(entries.status, "published"));
-  if (opts.collectionId) conds.push(eq(entries.collectionId, opts.collectionId));
-
-  const rows = await db
-    .select({
-      id: entries.id,
-      workspaceId: entries.workspaceId,
-      collectionId: entries.collectionId,
-      title: entries.title,
-      slug: entries.slug,
-      excerpt: entries.excerpt,
-      bodyText: entries.bodyText,
-      publishedAt: entries.publishedAt,
-      authorName: users.name,
-      authorHandle: users.handle,
-      ftsRank: sql<number>`ts_rank_cd(${docVec}, ${tsq})`.as("fts_rank"),
-      snippet:
-        sql<string>`ts_headline('spanish', coalesce(${entries.bodyText}, ${entries.excerpt}, ''), ${tsq}, 'StartSel=<mark>,StopSel=</mark>,MaxFragments=2,MaxWords=20,MinWords=8')`.as(
-          "snippet",
-        ),
-    })
-    .from(entries)
-    .leftJoin(users, eq(users.id, entries.authorId))
-    .where(and(...conds, sql`${docVec} @@ ${tsq}`))
-    .orderBy(desc(sql`ts_rank_cd(${docVec}, ${tsq})`))
-    .limit(limit * 2);
-
-  return rows.map((r) => ({
-    ...r,
+  const hits = await ftsSearchAdapter({
+    workspaceId: opts.workspaceId,
+    query: opts.query,
+    scope: opts.scope,
+    collectionId: opts.collectionId,
+    limit: limit * 2,
+  });
+  return hits.map((h) => ({
+    id: h.id,
+    workspaceId: h.workspaceId,
+    collectionId: h.collectionId,
+    title: h.title,
+    slug: h.slug,
+    excerpt: h.excerpt,
+    bodyText: h.bodyText,
+    publishedAt: h.publishedAt,
+    authorName: h.authorName,
+    authorHandle: h.authorHandle,
+    ftsRank: h.ftsRank,
     vectorScore: 0,
-    score: r.ftsRank,
-    snippet: sanitizeSnippet(r.snippet),
+    score: h.ftsRank,
+    snippet: h.snippet,
   }));
 }
 
@@ -105,9 +95,15 @@ export async function vectorSearch(opts: SearchOpts): Promise<SearchHit[]> {
 
   const { vector } = await embed(q);
   const limit = opts.limit ?? 10;
-  const vsql = vectorToSql(vector);
+  // Distancia cosine cross-dialect: pgvector usa `<=>`, MySQL 9 usa VEC_DISTANCE.
+  const distExpr = cosineDistance(entries.embedding, vector);
 
-  const conds = [eq(entries.workspaceId, opts.workspaceId), sql`${entries.embedding} IS NOT NULL`];
+  // F9b: el vector search nunca devuelve forks de branches.
+  const conds = [
+    eq(entries.workspaceId, opts.workspaceId),
+    isNull(entries.branchId),
+    sql`${entries.embedding} IS NOT NULL`,
+  ];
   if (opts.scope === "published") conds.push(eq(entries.status, "published"));
   if (opts.collectionId) conds.push(eq(entries.collectionId, opts.collectionId));
 
@@ -123,18 +119,17 @@ export async function vectorSearch(opts: SearchOpts): Promise<SearchHit[]> {
       publishedAt: entries.publishedAt,
       authorName: users.name,
       authorHandle: users.handle,
-      // pgvector: <=> es distancia cosine (0..2). Score = 1 - distancia (1 = idéntico).
-      distance: sql<number>`${entries.embedding} <=> ${vsql}::vector`.as("distance"),
+      distance: distExpr.as("distance"),
     })
     .from(entries)
     .leftJoin(users, eq(users.id, entries.authorId))
     .where(and(...conds))
-    .orderBy(sql`${entries.embedding} <=> ${vsql}::vector`)
+    .orderBy(distExpr)
     .limit(limit * 2);
 
   return rows.map((r) => {
     const distance = Number(r.distance ?? 1);
-    const sim = Math.max(0, 1 - distance / 2);
+    const sim = distanceToSimilarity(distance);
     return {
       id: r.id,
       workspaceId: r.workspaceId,
@@ -205,20 +200,6 @@ export async function hybridSearch(opts: SearchOpts): Promise<SearchHit[]> {
   }));
 }
 
-function sanitizeSnippet(snippet: string | null | undefined): string {
-  if (!snippet) return "";
-  // ts_headline puede contener cualquier carácter del documento.
-  // Como vamos a renderizar con dangerouslySetInnerHTML, escapamos todo y reemplazamos solo nuestras marcas seguras.
-  // Truco: pasamos delimiters únicos a ts_headline (StartSel/StopSel) y escapamos todo lo demás.
-  const escaped = snippet
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-  // Restauramos solo los marcadores controlados que pasamos a Postgres.
-  return escaped.replace(/&lt;mark&gt;/g, "<mark>").replace(/&lt;\/mark&gt;/g, "</mark>");
-}
-
 /**
  * Helper para Ask CSM: top-K passages con texto largo para contexto RAG.
  */
@@ -247,7 +228,14 @@ export async function indexCoverage(workspaceId: string): Promise<{
   const totalRows = await db
     .select({ count: sql<number>`count(*)` })
     .from(entries)
-    .where(and(eq(entries.workspaceId, workspaceId), eq(entries.status, "published")));
+    .where(
+      and(
+        eq(entries.workspaceId, workspaceId),
+        eq(entries.status, "published"),
+        // F9b: cobertura del índice solo cuenta main.
+        isNull(entries.branchId),
+      ),
+    );
   const embRows = await db
     .select({ count: sql<number>`count(*)` })
     .from(entries)
@@ -255,6 +243,7 @@ export async function indexCoverage(workspaceId: string): Promise<{
       and(
         eq(entries.workspaceId, workspaceId),
         eq(entries.status, "published"),
+        isNull(entries.branchId),
         sql`${entries.embedding} IS NOT NULL`,
       ),
     );

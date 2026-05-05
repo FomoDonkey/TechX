@@ -2,12 +2,13 @@ import { cn } from "@/lib/utils";
 import Link from "next/link";
 
 const TABS: Array<{
-  key: "all" | "draft" | "review" | "scheduled" | "published" | "archived";
+  key: "all" | "draft" | "review" | "approved" | "scheduled" | "published" | "archived";
   label: string;
 }> = [
   { key: "all", label: "Todos" },
   { key: "draft", label: "Borradores" },
   { key: "review", label: "Revisión" },
+  { key: "approved", label: "Aprobados" },
   { key: "scheduled", label: "Programados" },
   { key: "published", label: "Publicados" },
   { key: "archived", label: "Archivados" },

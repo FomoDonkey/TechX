@@ -9,7 +9,15 @@ import { requireWorkspace } from "@/lib/workspace";
 export const metadata = { title: "Contenido" };
 
 type SP = { status?: string; q?: string; page?: string };
-const VALID_STATUSES = new Set(["all", "draft", "review", "scheduled", "published", "archived"]);
+const VALID_STATUSES = new Set([
+  "all",
+  "draft",
+  "review",
+  "approved",
+  "scheduled",
+  "published",
+  "archived",
+]);
 
 export default async function ContenidoPage({
   searchParams,
@@ -22,6 +30,7 @@ export default async function ContenidoPage({
     | "all"
     | "draft"
     | "review"
+    | "approved"
     | "scheduled"
     | "published"
     | "archived";

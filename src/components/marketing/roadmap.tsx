@@ -1,70 +1,100 @@
 import { Check, Circle } from "lucide-react";
 
-const phases = [
+const phases: Array<{ id: string; title: string; desc: string; done: boolean }> = [
   {
-    id: 0,
+    id: "0",
     title: "Bootstrap",
-    desc: "Monorepo, Next.js 15, Tailwind v4, Drizzle, Better-Auth, CI",
+    desc: "Monorepo, Next.js 15, Tailwind v4, Drizzle, Better-Auth, CI.",
     done: true,
   },
   {
-    id: 1,
+    id: "1",
     title: "Auth + Onboarding mágico",
-    desc: "Login, AI Site Generator, workspaces, invitaciones, ABAC",
-    done: false,
+    desc: "Login, AI Site Generator, workspaces, invitaciones, ABAC.",
+    done: true,
   },
   {
-    id: 2,
+    id: "2",
     title: "Dashboard + Editor + Posts",
-    desc: "KPIs, DataTable, Tiptap completo, autosave, revisiones, render público",
-    done: false,
+    desc: "KPIs, DataTable, Tiptap completo, autosave, revisiones, render público.",
+    done: true,
   },
   {
-    id: 3,
+    id: "3",
     title: "Media Library + DAM",
-    desc: "Uploader, blurhash, AI bg-removal, AI image gen, MediaPicker",
-    done: false,
+    desc: "Uploader, blurhash, AI bg-removal, AI image gen, MediaPicker.",
+    done: true,
   },
   {
-    id: 4,
+    id: "4",
     title: "Collections Builder + Pages + Symbols",
-    desc: "Schema builder, page builder Framer-style, Symbols",
-    done: false,
+    desc: "Schema builder, page builder Framer-style, Symbols, Live-Edit overlay.",
+    done: true,
   },
   {
-    id: 5,
+    id: "5",
     title: "Sitio público + 5 temas + SEO",
-    desc: "Magazine, Portfolio, Docs, Storefront, Newsletter + OG dinámico",
-    done: false,
+    desc: "Magazine, Portfolio, Docs, Storefront, Newsletter. OG dinámico, sitemap, RSS.",
+    done: true,
   },
   {
-    id: 6,
+    id: "6",
     title: "IA + búsqueda semántica + Comentarios",
-    desc: "AI inline ⌘J, voice, embeddings pgvector, Ask CSM, smart linking",
-    done: false,
+    desc: "AI inline ⌘J, voice, embeddings pgvector, Ask CSM, smart linking, moderación.",
+    done: true,
   },
   {
-    id: 7,
+    id: "7",
     title: "APIs + Webhooks + Forms + CLI/SDK",
-    desc: "REST + GraphQL + OpenAPI, automations, forms builder, CLI",
-    done: false,
+    desc: "REST + GraphQL + OpenAPI, automations, forms builder, CLI csm, SDK tipado.",
+    done: true,
   },
   {
-    id: 8,
+    id: "8",
     title: "Newsletter + Memberships + A/B + Live-Edit",
-    desc: "Stripe paywall, A/B nativo, personalización, live-edit on prod",
+    desc: "Stripe paywall por bloque, A/B nativo con allocation determinista, live-edit on prod.",
+    done: true,
+  },
+  {
+    id: "9",
+    title: "Importadores + Branching + Calendar editorial",
+    desc: "WP/Notion/MD importers, content branching estilo Git, calendar + workflows + SLA.",
+    done: true,
+  },
+  {
+    id: "10a",
+    title: "Seguridad enterprise",
+    desc: "2FA TOTP + Passkeys, GDPR export, CSP, BotID, AI cost cap, audit log, OWASP audit.",
+    done: true,
+  },
+  {
+    id: "10b",
+    title: "Realtime Collaborative Editing",
+    desc: "Y.js + Tiptap cursors, presence global en TODO el admin, following mode, reactions live, mentions email.",
+    done: true,
+  },
+  {
+    id: "10c",
+    title: "MCP server + Agente IA + Content Health",
+    desc: "MCP server con 14 tools (Claude Desktop, Cursor, VS Code), agente conversacional, Content Health scan semanal. Workflows durables Vercel WDK pendientes.",
+    done: true,
+  },
+  {
+    id: "10d",
+    title: "Performance + PWA + Edge",
+    desc: "Lighthouse 100x4 con CI gate, bundle analyzer, dynamic imports admin, PWA + Dexie offline drafts, RUM propio.",
     done: false,
   },
   {
-    id: 9,
-    title: "Importadores + Branching + Calendar",
-    desc: "WP/Notion/MD importers, content branching, editorial calendar",
+    id: "10e",
+    title: "Operability + Scale",
+    desc: "Backups diarios pg_dump→Blob, retention policies, paginación cursor, branch restore, audit export CSV.",
     done: false,
   },
   {
-    id: 10,
-    title: "Pulido + Performance + Deploy",
-    desc: "PWA, GDPR, 2FA, backups, Lighthouse 100, 1-click deploy",
+    id: "10f",
+    title: "Launch polish + Demo",
+    desc: "Seed espectacular, README con GIFs, Deploy to Vercel button, vercel.ts, video walkthrough, AI Site Generator E2E.",
     done: false,
   },
 ];
@@ -74,10 +104,10 @@ export function Roadmap() {
     <section id="fases" className="mx-auto max-w-4xl px-4 py-32">
       <div className="mb-12 text-center">
         <h2 className="font-display text-4xl font-bold tracking-tight md:text-5xl">
-          Roadmap de <span className="gradient-text">11 fases</span>
+          Roadmap · <span className="gradient-text">13 de 16 fases listas</span>
         </h2>
         <p className="mt-3 text-muted-foreground">
-          Cada fase deja el sistema utilizable y deployable.
+          F0–F10c entregadas. Cada fase deja el sistema utilizable y deployable.
         </p>
       </div>
 
