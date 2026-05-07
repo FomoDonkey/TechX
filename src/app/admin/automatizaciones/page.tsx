@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateAutomationButton } from "./create-button";
 
-export const metadata: Metadata = { title: "Automatizaciones · CSM" };
+export const metadata: Metadata = { title: "Automatizaciones · techx" };
 export const dynamic = "force-dynamic";
 
 const TRIGGER_LABELS: Record<string, string> = {

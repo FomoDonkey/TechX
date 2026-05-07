@@ -18,6 +18,16 @@ const ANON_COOKIE = "csm_aid";
 const ANON_RE = /^[A-Za-z0-9_-]{16,128}$/;
 const ONE_YEAR_S = 60 * 60 * 24 * 365;
 
+/**
+ * F11a — Path-based workspace prefix. Cualquier URL pública que empiece por
+ * `/s/<slug>/...` se reescribe a `/...` para que las rutas existentes (`/`,
+ * `/blog`, `/blog/[slug]`, etc.) sigan matcheando, y se inyecta la cabecera
+ * `x-csm-path-slug` que el resolver Node lee en SSR para elegir workspace.
+ *
+ * Slugs: lowercase a-z 0-9 guión, 3-30 chars (mismo regex que `src/domain/slug.ts`).
+ */
+const SLUG_PREFIX = /^\/s\/([a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])?)(\/.*|$)/;
+
 function generateAnonId(): string {
   // 16 bytes random → base64url. Edge runtime: globalThis.crypto está disponible.
   const buf = new Uint8Array(16);
@@ -56,10 +66,27 @@ export function middleware(req: NextRequest) {
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set("x-nonce", nonce);
 
-  const res = NextResponse.next({ request: { headers: requestHeaders } });
+  // F11a — Conserva el pathname canónico. SSR lo necesita para construir
+  // redirects 301 al renombrar slug (los rewrites cambian req.nextUrl pero
+  // el header conserva la URL original que el visitante tecleó).
+  requestHeaders.set("x-csm-pathname", pathname);
+
+  // F11a — `/s/<slug>/...` → reescribe a `/...` con header. NO aplicamos el
+  // rewrite a rutas /admin, /api, /preview, /builder-frame, /onboarding,
+  // /login, /registro, /olvide ni /s solitario — solo URLs públicas.
+  const rewriteTarget = computeSlugRewrite(pathname);
+  let response: NextResponse;
+  if (rewriteTarget) {
+    requestHeaders.set("x-csm-path-slug", rewriteTarget.slug);
+    const url = req.nextUrl.clone();
+    url.pathname = rewriteTarget.rest;
+    response = NextResponse.rewrite(url, { request: { headers: requestHeaders } });
+  } else {
+    response = NextResponse.next({ request: { headers: requestHeaders } });
+  }
 
   const isHttps = req.nextUrl.protocol === "https:";
-  applySecurityHeaders(res.headers, {
+  applySecurityHeaders(response.headers, {
     nonce,
     // Default report-only. Activable con `CSP_ENFORCE=1` cuando el dashboard
     // `/admin/ajustes/seguridad/headers` muestre la cola de reports limpia.
@@ -72,7 +99,7 @@ export function middleware(req: NextRequest) {
   // sticky variant y futuros analytics. No bloquea, no logea.
   const existing = req.cookies.get(ANON_COOKIE)?.value;
   if (!existing || !ANON_RE.test(existing)) {
-    res.cookies.set({
+    response.cookies.set({
       name: ANON_COOKIE,
       value: generateAnonId(),
       maxAge: ONE_YEAR_S,
@@ -85,7 +112,18 @@ export function middleware(req: NextRequest) {
       path: "/",
     });
   }
-  return res;
+  return response;
+}
+
+function computeSlugRewrite(pathname: string): { slug: string; rest: string } | null {
+  const m = pathname.match(SLUG_PREFIX);
+  if (!m) return null;
+  const slug = m[1];
+  if (!slug) return null;
+  const rest = m[2] || "/";
+  // Sanity: si tras el strip queda otro `/s/...` (recursión), abort.
+  if (rest.startsWith("/s/")) return null;
+  return { slug, rest };
 }
 
 export const config = {

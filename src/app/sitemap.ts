@@ -1,20 +1,15 @@
 import { db } from "@/db/client";
-import {
-  collections,
-  entries,
-  members,
-  pages,
-  taxonomies,
-  terms,
-  users,
-  workspaces,
-} from "@/db/schema";
+import { collections, entries, members, pages, taxonomies, terms, users } from "@/db/schema";
+import { resolvePublicWorkspaceFromRequest } from "@/domain/resolver";
 import { env } from "@/env";
 import { POSTS_SLUG } from "@/lib/entries";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { MetadataRoute } from "next";
 
-export const revalidate = 3600;
+// F11a: el sitemap depende del Host (multi-tenant), así que NO podemos
+// usar revalidate global. `force-dynamic` per-request — Next emite cabeceras
+// de cache adecuadas para cada hostname.
+export const dynamic = "force-dynamic";
 
 /**
  * Sitemap XML generado dinámicamente. Incluye:
@@ -36,10 +31,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   if (!db) return [homeEntry, { url: `${base}/blog`, changeFrequency: "daily", priority: 0.8 }];
 
   try {
-    // TODO(custom-domains): resolver por host cuando aterrice multi-tenant routing.
-    const ws = await db.select().from(workspaces).orderBy(workspaces.createdAt).limit(1);
-    const workspace = ws[0];
-    if (!workspace) return [homeEntry];
+    // F11a: resolver multi-tenant — sitemap depende del Host del request.
+    const resolved = await resolvePublicWorkspaceFromRequest();
+    if (!resolved) return [homeEntry];
+    const workspace = resolved.workspace;
 
     const [pageRows, postRows, authorRows, tagRows] = await Promise.all([
       db

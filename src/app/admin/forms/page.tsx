@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateFormButton } from "./create-button";
 
-export const metadata: Metadata = { title: "Formularios · CSM" };
+export const metadata: Metadata = { title: "Formularios · techx" };
 export const dynamic = "force-dynamic";
 
 function formatDate(d: Date | null) {

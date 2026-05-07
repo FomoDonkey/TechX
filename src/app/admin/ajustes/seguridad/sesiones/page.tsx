@@ -8,7 +8,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { type SessionRow, SessionsClient } from "./client";
 
-export const metadata: Metadata = { title: "Sesiones · CSM" };
+export const metadata: Metadata = { title: "Sesiones · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function SesionesPage() {

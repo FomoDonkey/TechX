@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { PasskeysClient } from "./client";
 
-export const metadata: Metadata = { title: "Passkeys · CSM" };
+export const metadata: Metadata = { title: "Passkeys · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function PasskeysPage() {

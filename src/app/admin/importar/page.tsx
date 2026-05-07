@@ -10,7 +10,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { UploadZone } from "./upload-zone";
 
-export const metadata: Metadata = { title: "Importar · CSM" };
+export const metadata: Metadata = { title: "Importar · techx" };
 export const dynamic = "force-dynamic";
 
 const STATUS_LABELS: Record<string, string> = {

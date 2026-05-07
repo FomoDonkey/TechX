@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { countInt } from "@/db/dialect";
 import { collections, entryAssignments, members, users } from "@/db/schema";
 import {
   type CalendarItem,
@@ -13,7 +14,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Metadata } from "next";
 import { CalendarClient } from "./calendar-client";
 
-export const metadata: Metadata = { title: "Calendario · CSM" };
+export const metadata: Metadata = { title: "Calendario · techx" };
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -111,7 +112,7 @@ export default async function CalendarPage({ searchParams }: { searchParams: Sea
     ? await db
         .select({
           userId: entryAssignments.assigneeId,
-          n: sql<number>`count(*)::int`,
+          n: countInt(),
         })
         .from(entryAssignments)
         .where(

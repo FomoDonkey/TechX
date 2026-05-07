@@ -2,6 +2,7 @@ import { notFound } from "@/api/errors";
 import { computeEtag } from "@/api/runtime";
 import { CollectionResourceSchema, paginatedResponseSchema } from "@/api/schemas";
 import { db } from "@/db/client";
+import { countInt } from "@/db/dialect";
 import { collections, entries } from "@/db/schema";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
@@ -53,7 +54,7 @@ export async function getCollectionHandler(input: {
   // Incluye contador de entries
   // F9b: contador refleja main, no incluye forks de branches.
   const countRows = await db
-    .select({ count: sql<number>`count(*)::int` })
+    .select({ count: countInt() })
     .from(entries)
     .where(and(eq(entries.collectionId, row.id), isNull(entries.branchId)));
   const count = countRows[0]?.count ?? 0;

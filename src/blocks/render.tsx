@@ -24,6 +24,22 @@ import {
   NimbusQuickStart,
 } from "@/blocks/spectacular/docs-aurora-sections";
 import {
+  F1Calendar,
+  F1ChampionsHistory,
+  F1Constructors,
+  F1ConstructorsTable,
+  F1Cta,
+  F1DriverOfTheDay,
+  F1Drivers,
+  F1Hero,
+  F1LastRacePodium,
+  F1Season2026,
+  F1SeasonBanner,
+  F1Standings,
+  F1Stats,
+  F1Tracks,
+} from "@/blocks/spectacular/f1-grand-prix-sections";
+import {
   SecurifyHero,
   SecurityCta,
   SecurityPillars,
@@ -430,6 +446,35 @@ function BlockRender({
       return renderSubstackArchive(props);
     case "tpl-substack-footer":
       return renderSubstackFooter(props);
+
+    case "tpl-f1-hero":
+      return <F1Hero {...(props as Record<string, never>)} />;
+    case "tpl-f1-drivers":
+      return <F1Drivers {...(props as Record<string, never>)} />;
+    case "tpl-f1-constructors":
+      return <F1Constructors {...(props as Record<string, never>)} />;
+    case "tpl-f1-calendar":
+      return <F1Calendar {...(props as Record<string, never>)} />;
+    case "tpl-f1-stats":
+      return <F1Stats {...(props as Record<string, never>)} />;
+    case "tpl-f1-standings":
+      return <F1Standings {...(props as Record<string, never>)} />;
+    case "tpl-f1-constructors-table":
+      return <F1ConstructorsTable {...(props as Record<string, never>)} />;
+    case "tpl-f1-tracks":
+      return <F1Tracks {...(props as Record<string, never>)} />;
+    case "tpl-f1-last-race":
+      return <F1LastRacePodium {...(props as Record<string, never>)} />;
+    case "tpl-f1-dotd":
+      return <F1DriverOfTheDay {...(props as Record<string, never>)} />;
+    case "tpl-f1-2026":
+      return <F1Season2026 {...(props as Record<string, never>)} />;
+    case "tpl-f1-season-banner":
+      return <F1SeasonBanner {...(props as Record<string, never>)} />;
+    case "tpl-f1-champions":
+      return <F1ChampionsHistory {...(props as Record<string, never>)} />;
+    case "tpl-f1-cta":
+      return <F1Cta {...(props as Record<string, never>)} />;
 
     default:
       return (

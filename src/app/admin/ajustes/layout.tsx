@@ -2,9 +2,11 @@ import { cn } from "@/lib/utils";
 import { requireWorkspace } from "@/lib/workspace";
 import {
   Bell,
+  Globe,
   KeyRound,
   Lock,
   type LucideIcon,
+  Rocket,
   ShieldCheck,
   Sparkles,
   UserCircle,
@@ -19,6 +21,18 @@ const NAV: NavItem[] = [
     label: "Perfil",
     icon: UserCircle,
     description: "Tu nombre, avatar y preferencias",
+  },
+  {
+    href: "/admin/ajustes/dominio",
+    label: "Dominio y URL",
+    icon: Globe,
+    description: "URL pública gratis y dominio propio",
+  },
+  {
+    href: "/admin/ajustes/publicar",
+    label: "Publicar al mundo",
+    icon: Rocket,
+    description: "Sube CSM a un servidor para que sea visible online",
   },
   {
     href: "/admin/ajustes/seguridad",

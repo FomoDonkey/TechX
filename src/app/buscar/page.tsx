@@ -4,7 +4,8 @@ import { hybridSearch } from "@/search";
 import { Search } from "lucide-react";
 import type { Metadata } from "next";
 
-export const revalidate = 60;
+// F11a: multi-tenant por Host.
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
   return {

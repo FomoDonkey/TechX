@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/db/client";
-import { collections, entries, users, workspaces } from "@/db/schema";
+import { collections, entries, users } from "@/db/schema";
+import { resolvePublicWorkspaceFromRequest } from "@/domain/resolver";
 import { POSTS_SLUG } from "@/lib/entries";
 import { and, desc, eq, isNull } from "drizzle-orm";
 
@@ -30,11 +31,13 @@ export async function buildFeedPayload(
 ): Promise<FeedPayload | null> {
   if (!db) return null;
   try {
-    // TODO(custom-domains): resolver workspace por Host cuando lleguen los
-    // dominios personalizados. Hoy igual que getDefaultPublicWorkspace().
-    const ws = await db.select().from(workspaces).orderBy(workspaces.createdAt).limit(1);
-    const workspace = ws[0];
-    if (!workspace) return null;
+    // F11a: resolver multi-tenant — el workspace puede venir por custom domain,
+    // subdomain del ROOT_DOMAIN, path-based `/s/<slug>` o single-tenant fallback.
+    // El resolver respeta el `Host` del request, lo que asegura que el feed
+    // de `mi-blog.techx.com/feed.xml` sea de mi-blog y no del 1er workspace.
+    const resolved = await resolvePublicWorkspaceFromRequest();
+    if (!resolved) return null;
+    const workspace = resolved.workspace;
 
     const rows = await db
       .select({

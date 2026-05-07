@@ -1,77 +1,103 @@
-import { Check, X } from "lucide-react";
+import {
+  Bot,
+  GitBranch,
+  Heart,
+  Plug,
+  ShieldCheck,
+  type Sparkles,
+  Users,
+  Wand2,
+  Zap,
+} from "lucide-react";
 
-const rows: Array<{
-  feature: string;
-  csm: string | true;
-  wp: string | false;
+/**
+ * Sección "Por qué techx" — propuesta de valor en bloques visuales.
+ * Sin comparativas explícitas con competidores: lo que ofrecemos, cómo se siente
+ * y por qué importa.
+ */
+
+const PILLARS: Array<{
+  icon: typeof Sparkles;
+  title: string;
+  body: string;
+  emphasis: string;
 }> = [
-  { feature: "Editor", csm: "Notion-like (Tiptap)", wp: "Gutenberg lento" },
-  { feature: "Page Builder visual", csm: "Sí (estilo Framer)", wp: "Plugins de pago" },
-  { feature: "IA nativa", csm: "Inline ⌘J + RAG + voice", wp: "Plugins externos" },
   {
-    feature: "Realtime collab self-hosted",
-    csm: "Y.js + cursors + presence en TODO el admin",
-    wp: false,
+    icon: Wand2,
+    title: "Builder con IA conversacional",
+    body: "Describe tu sitio en una frase y lo construye desde cero. Pide cambios sin tocar código. Reescribe posts, ajusta paletas, añade contenido — siempre en lenguaje natural.",
+    emphasis: "Único en CMS open-source.",
   },
-  { feature: "MCP server nativo", csm: "14 tools para Claude/Cursor/IDE", wp: false },
-  { feature: "Agente IA in-product", csm: "Chat conversacional con tool-use", wp: false },
-  { feature: "Content Health Scan", csm: "Lighthouse para contenido editorial", wp: false },
-  { feature: "Búsqueda semántica", csm: "pgvector + FTS híbrido", wp: false },
-  { feature: "Multi-tenant", csm: "Día 1", wp: "Multisite con dolor" },
-  { feature: "Headless API", csm: "REST + GraphQL + SDK + CLI", wp: "REST viejo" },
-  { feature: "Type-safe", csm: "End-to-end TypeScript", wp: "PHP" },
-  { feature: "Memberships + Stripe", csm: "Paywall por bloque", wp: "Plugin de pago" },
-  { feature: "Newsletter integrada", csm: "Sí, tipo Substack", wp: "Plugin externo" },
-  { feature: "A/B testing", csm: "Nativo, allocation determinista", wp: "Plugin de pago" },
-  { feature: "Branching de contenido", csm: "Tipo Git con merge UI", wp: false },
-  { feature: "Calendar editorial + SLA", csm: "Sí, con iCal feeds", wp: "Plugin de pago" },
-  { feature: "Live-edit on production", csm: "Click → editar", wp: false },
   {
-    feature: "Seguridad enterprise",
-    csm: "2FA + Passkeys + GDPR + CSP + BotID",
-    wp: "Hardening por separado",
+    icon: Users,
+    title: "Edición colaborativa real",
+    body: "Cursores remotos, presence en todo el admin, comentarios con reacciones live. Following mode para acompañar a un compañero en su flujo. Sin servicio externo: corre en tu Postgres.",
+    emphasis: "Self-hosted sin friction.",
   },
-  { feature: "Stack moderno", csm: "Next.js 15 + RSC + Y.js", wp: "PHP + jQuery" },
+  {
+    icon: Plug,
+    title: "MCP server nativo",
+    body: "Cualquier agente de IA gestiona tu contenido como tools. Conéctalo a Claude Desktop, Cursor, VS Code. CLI que detecta el cliente y configura solo.",
+    emphasis: "Tu CMS, en tu IDE.",
+  },
+  {
+    icon: GitBranch,
+    title: "Branching de contenido",
+    body: "Ramas tipo Git para preparar releases editoriales completos. Merge con diff visual. Revertir con un click. Preview por rama con URL firmada.",
+    emphasis: "Zero-fear publishing.",
+  },
+  {
+    icon: Bot,
+    title: "Agente editorial in-product",
+    body: "Chat con tool-use que opera tu workspace: crea drafts, busca contenido, escanea SEO, programa publicaciones. Audit log siempre apunta al humano detrás.",
+    emphasis: "El copiloto que ya esperabas.",
+  },
+  {
+    icon: Heart,
+    title: "Content Health Scan",
+    body: "Cron weekly que escanea SEO, alt-text, jerarquía de headings, contenido fino, fechas obsoletas. Score 0-100 transparente con issues accionables.",
+    emphasis: "Lighthouse para contenido.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Confianza enterprise",
+    body: "2FA TOTP + Passkeys WebAuthn. GDPR export ZIP completo y derecho al olvido. CSP estricta con Reporting API. AI cost cap por workspace. Audit log exportable.",
+    emphasis: "Auditoría OWASP Top-10 limpia.",
+  },
+  {
+    icon: Zap,
+    title: "Stack moderno, sin plugins",
+    body: "Type-safe end-to-end. REST + GraphQL + SDK + CLI auto-generados desde tu schema. Edge runtime en sitio público. Multi-dialect Postgres/MySQL.",
+    emphasis: "Cero PHP, cero parches.",
+  },
 ];
 
 export function WhyCSM() {
   return (
-    <section id="por-que" className="mx-auto max-w-5xl px-4 py-32">
-      <div className="mb-12 text-center">
+    <section id="diferencia" className="mx-auto max-w-6xl px-4 py-32">
+      <div className="mb-16 text-center">
         <h2 className="font-display text-4xl font-bold tracking-tight md:text-5xl">
-          CSM <span className="gradient-text">vs</span> WordPress
+          Lo que hace a <span className="gradient-text">techx</span> distinto
         </h2>
-        <p className="mt-3 text-muted-foreground">Mismo problema. Solución 20 años más joven.</p>
+        <p className="mt-4 text-balance text-lg text-muted-foreground">
+          Ocho razones por las que tu equipo editorial se va a sentir como en casa.
+        </p>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border bg-card/40 backdrop-blur">
-        <div className="grid grid-cols-[1.4fr_1fr_1fr] border-b bg-secondary/40 px-6 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          <div>Característica</div>
-          <div className="text-center">
-            <span className="gradient-text font-bold">CSM</span>
-          </div>
-          <div className="text-center">WordPress</div>
-        </div>
-        {rows.map((row, idx) => (
-          <div
-            key={row.feature}
-            className={`grid grid-cols-[1.4fr_1fr_1fr] items-center px-6 py-4 text-sm ${
-              idx % 2 === 0 ? "" : "bg-secondary/20"
-            }`}
+      <div className="grid gap-4 md:grid-cols-2">
+        {PILLARS.map(({ icon: Icon, title, body, emphasis }) => (
+          <article
+            key={title}
+            className="group relative overflow-hidden rounded-2xl border bg-card/40 p-6 backdrop-blur transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg"
           >
-            <div className="font-medium">{row.feature}</div>
-            <div className="flex items-center justify-center gap-2 text-center">
-              <Check className="size-4 shrink-0 text-success" />
-              <span>{typeof row.csm === "string" ? row.csm : ""}</span>
+            <div className="absolute -right-12 -top-12 size-40 rounded-full bg-[radial-gradient(circle,oklch(from_var(--brand-1)_l_c_h_/_0.18),transparent_60%)] opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+            <div className="mb-3 inline-flex size-10 items-center justify-center rounded-xl bg-[linear-gradient(120deg,oklch(from_var(--brand-1)_l_c_h_/_0.18),oklch(from_var(--brand-2)_l_c_h_/_0.18))] text-primary">
+              <Icon className="size-5" />
             </div>
-            <div className="flex items-center justify-center gap-2 text-center text-muted-foreground">
-              {row.wp === false ? (
-                <X className="size-4 shrink-0 text-destructive" />
-              ) : (
-                <span className="text-xs italic">{row.wp}</span>
-              )}
-            </div>
-          </div>
+            <h3 className="mb-1 font-semibold tracking-tight">{title}</h3>
+            <p className="mb-2 text-sm leading-relaxed text-muted-foreground">{body}</p>
+            <p className="text-xs font-medium tracking-tight text-[var(--brand-1)]">{emphasis}</p>
+          </article>
         ))}
       </div>
     </section>

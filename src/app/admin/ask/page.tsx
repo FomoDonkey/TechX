@@ -11,7 +11,7 @@ export default async function AskPage() {
   return (
     <div className="mx-auto flex h-[calc(100vh-3.5rem)] w-full max-w-4xl flex-col px-4 py-6 md:px-8">
       <header className="mb-4 space-y-1">
-        <h1 className="font-display text-3xl font-bold">Ask CSM</h1>
+        <h1 className="font-display text-3xl font-bold">Pregunta IA</h1>
         <p className="text-sm text-muted-foreground">
           Chat RAG sobre tu contenido publicado. Cita inline ([1], [2]…) los fragmentos que usa.
           {!aiFeatures.hasAny ? (

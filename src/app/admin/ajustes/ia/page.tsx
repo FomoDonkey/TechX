@@ -12,7 +12,7 @@ import { redirect } from "next/navigation";
 import { BudgetForm } from "./client";
 import { AiProvidersForm, type ProviderId } from "./providers-form";
 
-export const metadata: Metadata = { title: "IA · CSM" };
+export const metadata: Metadata = { title: "IA · techx" };
 export const dynamic = "force-dynamic";
 
 const FEATURE_LABEL: Record<string, string> = {

@@ -19,6 +19,7 @@
 import type { AbResolution, AbResolutionMap, AbVariant } from "@/ab/types";
 import { consume } from "@/api/rate-limit";
 import { db } from "@/db/client";
+import { upsertNothing } from "@/db/dialect";
 import { abAssignments, abTests } from "@/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 
@@ -211,8 +212,8 @@ export async function resolveTestsForKeys(
       if (!rl.ok) allowInsert = false;
     }
     if (allowInsert) {
-      // onConflictDoNothing — si otra request paralela ya insertó, ignoramos.
-      await db.insert(abAssignments).values(toInsert).onConflictDoNothing();
+      // upsertNothing — si otra request paralela ya insertó, ignoramos.
+      await upsertNothing(abAssignments, { values: toInsert });
     }
   }
   if (toUpdate.length > 0) {

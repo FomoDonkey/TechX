@@ -5,7 +5,7 @@ import { requireWorkspace } from "@/lib/workspace";
 import { Layers, Plus } from "lucide-react";
 import Link from "next/link";
 
-export const metadata = { title: "Colecciones · CSM" };
+export const metadata = { title: "Colecciones · techx" };
 
 export default async function CollectionsPage({
   searchParams,

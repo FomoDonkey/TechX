@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
 import { type Entry, entries, entryHealth, entryHealthIssues } from "@/db/schema";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import {
@@ -119,25 +119,28 @@ export async function scanEntry(args: {
         })),
       );
     }
-    await tx
-      .insert(entryHealth)
-      .values({
-        entryId: entry.id,
-        workspaceId: entry.workspaceId,
-        score,
-        counts,
-        inputHash,
-        scannedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: entryHealth.entryId,
-        set: {
-          score,
-          counts,
-          inputHash,
-          scannedAt: new Date(),
-        },
+    // Cross-dialect upsert dentro de transaction. No podemos usar el helper
+    // `upsert` (usa `db` global, no `tx`); inline if/else.
+    const healthValues = {
+      entryId: entry.id,
+      workspaceId: entry.workspaceId,
+      score,
+      counts,
+      inputHash,
+      scannedAt: new Date(),
+    };
+    const healthSet = { score, counts, inputHash, scannedAt: new Date() };
+    if (dialect === "mysql") {
+      // biome-ignore lint/suspicious/noExplicitAny: Drizzle MySQL chain typing
+      await (tx.insert(entryHealth).values(healthValues) as any).onDuplicateKeyUpdate({
+        set: healthSet,
       });
+    } else {
+      await tx.insert(entryHealth).values(healthValues).onConflictDoUpdate({
+        target: entryHealth.entryId,
+        set: healthSet,
+      });
+    }
   });
 
   return { entryId: entry.id, score, issues: allIssues, cached: false };

@@ -24,7 +24,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { McpInstallTabs } from "./client";
 
-export const metadata: Metadata = { title: "MCP · CSM" };
+export const metadata: Metadata = { title: "MCP · techx" };
 export const dynamic = "force-dynamic";
 
 const TOOLS: Array<{

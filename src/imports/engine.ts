@@ -1,5 +1,12 @@
 import { db } from "@/db/client";
-import { deleteReturningCount, insertReturning, upsertReturning } from "@/db/dialect";
+import {
+  countFilterInt,
+  countInt,
+  deleteReturningCount,
+  insertReturning,
+  upsertNothing,
+  upsertReturning,
+} from "@/db/dialect";
 import {
   collections,
   comments,
@@ -427,10 +434,9 @@ async function importEntry(
   if (termIds.length > 0) {
     // Borra previos antes de insertar (idempotente en re-run)
     await db.delete(entryTerms).where(eq(entryTerms.entryId, targetId));
-    await db
-      .insert(entryTerms)
-      .values(termIds.map((termId) => ({ entryId: targetId, termId })))
-      .onConflictDoNothing();
+    await upsertNothing(entryTerms, {
+      values: termIds.map((termId) => ({ entryId: targetId, termId })),
+    });
   }
 
   // Redirect auto si tenía URL original. Usamos createRedirect() para que
@@ -832,10 +838,10 @@ export async function importStatsByLot(workspaceId: string, importId: string) {
   if (!db) return null;
   const [row] = await db
     .select({
-      total: sql<number>`count(*)::int`,
-      imported: sql<number>`sum(case when ${importItems.status} = 'imported' then 1 else 0 end)::int`,
-      failed: sql<number>`sum(case when ${importItems.status} = 'failed' then 1 else 0 end)::int`,
-      reverted: sql<number>`sum(case when ${importItems.status} = 'reverted' then 1 else 0 end)::int`,
+      total: countInt(),
+      imported: countFilterInt(sql`${importItems.status} = 'imported'`),
+      failed: countFilterInt(sql`${importItems.status} = 'failed'`),
+      reverted: countFilterInt(sql`${importItems.status} = 'reverted'`),
     })
     .from(importItems)
     .where(and(eq(importItems.workspaceId, workspaceId), eq(importItems.importId, importId)));

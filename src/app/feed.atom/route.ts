@@ -1,7 +1,8 @@
 import { env } from "@/env";
 import { buildFeedPayload, escapeXml } from "@/lib/feed";
 
-export const revalidate = 600;
+// F11a: feed depende del Host (multi-tenant).
+export const dynamic = "force-dynamic";
 
 const EMPTY_FEED = (base: string) => `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">

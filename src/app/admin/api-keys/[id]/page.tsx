@@ -12,7 +12,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { AuditTimeline, RotateKeyButton } from "./client";
 
-export const metadata: Metadata = { title: "API Key · CSM" };
+export const metadata: Metadata = { title: "API Key · techx" };
 export const dynamic = "force-dynamic";
 
 const STATUS_TONE = (code: number): "ok" | "warn" | "err" => {

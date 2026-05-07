@@ -8,15 +8,13 @@ export function Hero() {
     <section className="relative mx-auto flex min-h-[92vh] max-w-6xl flex-col items-center justify-center px-4 text-center">
       <Badge variant="gradient" className="mb-6 gap-1.5 px-4 py-1.5 text-xs">
         <Sparkles className="size-3" />
-        13/16 fases · realtime collab + MCP + agente IA · open source
+        Edición colaborativa · IA conversacional · open source
       </Badge>
 
       <h1 className="text-balance font-display text-5xl font-bold leading-[1.05] tracking-tight md:text-7xl lg:text-8xl">
-        El CMS que <span className="gradient-text">brilla</span>
-        <br />
-        donde WordPress se{" "}
+        Publica donde otros{" "}
         <span className="relative inline-block">
-          apaga
+          <span className="gradient-text">brillan</span>
           <svg
             aria-hidden="true"
             className="absolute inset-x-0 -bottom-2 mx-auto w-full"
@@ -26,22 +24,22 @@ export function Hero() {
             <title>Subrayado</title>
             <path
               d="M2 6 Q50 -2 100 4 T198 4"
-              stroke="oklch(0.72 0.25 340)"
+              stroke="oklch(0.66 0.2 18)"
               strokeWidth="3"
               fill="none"
               strokeLinecap="round"
             />
           </svg>
         </span>
-        .
+        ,
+        <br />
+        diseña como nadie.
       </h1>
 
       <p className="mt-8 max-w-2xl text-balance text-lg text-muted-foreground md:text-xl">
-        Publica como en <strong className="text-foreground">Notion</strong>. Diseña como en{" "}
-        <strong className="text-foreground">Framer</strong>. Colabora como en{" "}
-        <strong className="text-foreground">Linear</strong>. Despliega como en{" "}
-        <strong className="text-foreground">Vercel</strong>. CMS open-source, AI-native con MCP
-        server propio, multi-tenant y headless-first. En español, gratis, espectacular.
+        El CMS espectacular para equipos editoriales modernos. Edición colaborativa en tiempo real,
+        IA conversacional integrada, búsqueda semántica, branching de contenido, multi-tenant. Open
+        source y gratis para empezar.
       </p>
 
       <div className="mt-10 flex flex-col gap-3 sm:flex-row">
@@ -53,7 +51,7 @@ export function Hero() {
         <Button asChild variant="glass" size="xl" className="rounded-2xl">
           <Link href="https://github.com" target="_blank" rel="noreferrer">
             <Github className="mr-1" />
-            Ver en GitHub
+            Ver código
           </Link>
         </Button>
       </div>

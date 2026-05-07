@@ -15,7 +15,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@/db/client";
-import { atomicClaim, deleteReturningCount } from "@/db/dialect";
+import { atomicClaim, countInt, deleteReturningCount } from "@/db/dialect";
 import { memberMagicLinks, memberSessions } from "@/db/schema";
 import { env } from "@/env";
 import { and, eq, gte, sql } from "drizzle-orm";
@@ -64,7 +64,7 @@ export async function createMagicLink(input: {
   // Throttle: 5 / hora por (ws, email)
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
   const recent = await db
-    .select({ count: sql<number>`count(*)::int` })
+    .select({ count: countInt() })
     .from(memberMagicLinks)
     .where(
       and(

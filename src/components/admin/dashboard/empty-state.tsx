@@ -31,7 +31,7 @@ export function EmptyState({
         </span>
         <h2 className="mt-4 font-display text-2xl font-bold">Tu primer post está a un click.</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Editor Notion-like con slash menu, autosave y revisiones automáticas. Lo publicas cuando
+          Editor de bloques con slash menu, autosave y revisiones automáticas. Lo publicas cuando
           quieras.
         </p>
         <form action={createPost} className="mt-5 inline-block">

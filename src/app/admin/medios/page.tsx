@@ -5,6 +5,7 @@ import { type FolderNode, FolderTree } from "@/components/admin/medios/folder-tr
 import { MediaGridShell } from "@/components/admin/medios/media-grid";
 import { MediaList } from "@/components/admin/medios/media-list";
 import { db } from "@/db/client";
+import { countInt } from "@/db/dialect";
 import { media } from "@/db/schema";
 import { findAssetUsages } from "@/lib/asset-usage";
 import { type MediaKind, getMediaById, listFolders, listMedia } from "@/lib/media";
@@ -16,7 +17,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 
 export const metadata: Metadata = {
-  title: "Medios · CSM",
+  title: "Medios · techx",
 };
 
 const PAGE_SIZE = 60;
@@ -64,7 +65,7 @@ export default async function MediosPage({ searchParams }: PageProps) {
       ? db
           .select({
             folderId: media.folderId,
-            count: sql<number>`count(*)::int`,
+            count: countInt(),
           })
           .from(media)
           .where(eq(media.workspaceId, ctx.workspace.id))

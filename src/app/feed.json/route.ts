@@ -1,7 +1,8 @@
 import { env } from "@/env";
 import { buildFeedPayload } from "@/lib/feed";
 
-export const revalidate = 600;
+// F11a: feed depende del Host (multi-tenant).
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const base = env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");

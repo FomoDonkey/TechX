@@ -1,5 +1,5 @@
-import { db } from "@/db/client";
-import { insertReturning } from "@/db/dialect";
+import { db, dialect } from "@/db/client";
+import { countInt, insertReturning, upsertNothing } from "@/db/dialect";
 import {
   type Branch,
   type NewBranch,
@@ -57,10 +57,9 @@ export async function getOrCreateMainBranch(workspaceId: string): Promise<Branch
     .limit(1);
   if (existing) return existing;
 
-  // race-safe: insert con onConflictDoNothing por (ws, slug) y re-select.
-  await db
-    .insert(branches)
-    .values({
+  // race-safe: INSERT IGNORE / ON CONFLICT DO NOTHING por (ws, slug) + re-select.
+  await upsertNothing(branches, {
+    values: {
       workspaceId,
       name: "main",
       slug: "main",
@@ -70,8 +69,9 @@ export async function getOrCreateMainBranch(workspaceId: string): Promise<Branch
       status: "draft",
       color: "oklch(0.78 0.18 180)",
       icon: "git-branch",
-    })
-    .onConflictDoNothing({ target: [branches.workspaceId, branches.slug] });
+    },
+    target: [branches.workspaceId, branches.slug],
+  });
 
   const [final] = await db
     .select()
@@ -135,7 +135,7 @@ export async function listBranchesWithStats(workspaceId: string): Promise<Branch
   const commentRows = await db
     .select({
       branchId: branchComments.branchId,
-      n: sql<number>`count(*)::int`,
+      n: countInt(),
     })
     .from(branchComments)
     .where(and(eq(branchComments.workspaceId, workspaceId), eq(branchComments.status, "open")))
@@ -145,7 +145,10 @@ export async function listBranchesWithStats(workspaceId: string): Promise<Branch
   // Hacer 1 query agregada con LEFT JOIN.
   // Conflicto = fork (forked|deleted) cuya entry main cambió tras el snapshot.
   // `m.workspace_id = e.workspace_id` es defense-in-depth contra cross-tenant pollution.
-  const conflictRows = await db.execute(sql<{ branch_id: string; n: number }>`
+  // PG usa `::text` y `::int` casts; MySQL no los necesita (varchar/bigint nativos).
+  const conflictRows = await db.execute(
+    dialect === "postgres"
+      ? sql<{ branch_id: string; n: number }>`
     SELECT
       e.branch_id::text AS branch_id,
       COUNT(*)::int AS n
@@ -159,7 +162,23 @@ export async function listBranchesWithStats(workspaceId: string): Promise<Branch
       AND e.branched_from_updated_at IS NOT NULL
       AND m.updated_at > e.branched_from_updated_at
     GROUP BY e.branch_id
-  `);
+  `
+      : sql<{ branch_id: string; n: number }>`
+    SELECT
+      e.branch_id AS branch_id,
+      CAST(COUNT(*) AS SIGNED) AS n
+    FROM entries e
+    INNER JOIN entries m
+      ON m.id = e.original_entry_id
+      AND m.workspace_id = e.workspace_id
+    WHERE e.workspace_id = ${workspaceId}
+      AND e.branch_id IS NOT NULL
+      AND e.branch_state IN ('forked', 'deleted')
+      AND e.branched_from_updated_at IS NOT NULL
+      AND m.updated_at > e.branched_from_updated_at
+    GROUP BY e.branch_id
+  `,
+  );
 
   const commentByBranch = new Map<string, number>();
   for (const c of commentRows) if (c.branchId) commentByBranch.set(c.branchId, c.n);

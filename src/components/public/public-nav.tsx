@@ -11,7 +11,7 @@ interface PublicNavProps {
  * + 3 default links (Inicio, Blog, Suscribirse). Themed via parent ThemeShell.
  */
 export function PublicNav({ workspace }: PublicNavProps) {
-  const name = workspace?.name ?? "CSM";
+  const name = workspace?.name ?? "techx";
   const branding = workspace?.branding as { logo?: string; voice?: string } | null | undefined;
   return (
     <header className="sticky top-0 z-30 border-b border-[color:var(--th-border)] bg-[color:var(--th-bg)]/85 backdrop-blur supports-[backdrop-filter]:bg-[color:var(--th-bg)]/65">

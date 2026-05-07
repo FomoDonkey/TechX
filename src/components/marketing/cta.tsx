@@ -11,7 +11,7 @@ export function CTA() {
           className="absolute inset-0 -z-10 opacity-60"
           style={{
             background:
-              "conic-gradient(from 180deg at 50% 50%, oklch(0.55 0.22 290) 0deg, oklch(0.72 0.25 340) 120deg, oklch(0.78 0.18 180) 240deg, oklch(0.55 0.22 290) 360deg)",
+              "conic-gradient(from 180deg at 50% 50%, oklch(0.58 0.22 25) 0deg, oklch(0.66 0.2 18) 120deg, oklch(0.72 0.14 35) 240deg, oklch(0.58 0.22 25) 360deg)",
             filter: "blur(80px)",
           }}
         />
@@ -19,7 +19,8 @@ export function CTA() {
           ¿Listo para <span className="gradient-text">brillar</span>?
         </h2>
         <p className="mx-auto mt-4 max-w-xl text-balance text-lg text-muted-foreground">
-          Lanza tu CSM en menos de 60 segundos. Gratis para siempre. Tu contenido, tus datos.
+          Lanza tu plataforma en menos de 60 segundos. Gratis para siempre. Tu contenido, tus datos,
+          tu marca.
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Button asChild variant="gradient" size="xl" className="rounded-2xl">

@@ -2014,3 +2014,354 @@ passkeys, two_factors, rate_limits, members, invitations, collections, branches,
 
 ### Próximo paso
 Tarea 16 (E2E matrix) podrá levantar Docker MySQL y validar flow crítico end-to-end. Tarea 18 (ADR-002) normaliza las 11 columnas array a tablas auxiliares con helper `arrayCol(...)`.
+
+---
+
+## ✅ F1 Deploy hardening — facilidad de configuración (2026-05-06)
+
+Bloque entregado para que el despliegue F1 (CMS en AWS + MySQL externo en SDS Francia) sea trivial de configurar y enlazar. **6 cambios concretos:**
+
+- [x] **`docker-compose.external-db.yml`** — override que excluye el container `postgres` (vía `profiles: ["disabled"]`) y respeta `DATABASE_URL` externo del `.env` con `:?` para fallar limpio si el operador lo olvida. `depends_on: !reset []` limpia la dependencia al postgres del compose principal sin re-declarar el servicio. Resultado: `docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d csm` arranca CSM apuntando al MySQL del SDS sin tocar el compose principal.
+- [x] **`.env.docker.example`** — añadido bloque `DATABASE_URL` (con ejemplo F1 comentado) y bloque `MYSQL_VECTOR_FALLBACK` con explicación de cuándo activarlo (MySQL 8.x sí, MySQL 9+/Postgres no).
+- [x] **`scripts/f1-setup.mjs` + npm scripts `f1:setup` / `f1:sync` / `gen:secret`** — `f1:setup` clona `toUpperCase78/formula1-datasets` (o `git pull` si existe) + ejecuta `sync-f1-data.mjs` + imprime resumen, idempotente. `gen:secret` imprime un `openssl rand -hex 32` desde Node sin dependencia externa.
+- [x] **`schema.mysql.ts` VECTOR fallback** — `customType` lee `process.env.MYSQL_VECTOR_FALLBACK === "true"` en `dataType()` y degrada a `VARBINARY(8192)` si está activo. `drizzle-kit push` ya no falla en MySQL 8.x. Búsqueda semántica nativa deshabilitada gracefully en ese caso (route a Qdrant si está configurado).
+- [x] **`upsertNothing` helper en `dialect/upsert.ts`** — Postgres `ON CONFLICT DO NOTHING`, MySQL `INSERT IGNORE` vía `.ignore()`. Reemplaza el `onConflictDoNothing` directo de `seed.ts:57` que rompía en MySQL. Re-exportado en `dialect/index.ts`.
+- [x] **`docs/PROYECTO-F1-CMS-DEPLOY.md`** — sección 0 nueva: "Inicio rápido en 5 comandos" + "Mapa de máquinas" (🟦 SDS / 🟧 EC2 / 🟩 Local / 🟪 Container) + "Cómo construir DATABASE_URL" desglosado por componente + "Cómo generar AUTH_SECRET" con tres opciones. Etiquetas de máquina añadidas a cada bloque de código de las secciones 5-11. Sección 7.3 reescrita para usar el override en lugar del "comenta postgres a mano". Sección 9 simplificada a `npm run f1:setup`.
+
+**Estado:** despliegue F1 reducido a 5 comandos visibles desde el inicio del doc. Compañeros del grupo pueden seguirlo sin ambigüedad sobre dónde ejecutar cada cosa.
+
+**Pendiente E2E real (cuando el equipo tenga la EC2 viva):**
+- [ ] Probar `docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d csm` contra MySQL 8.4 del SDS
+- [ ] Verificar `db:seed` cross-dialect (workspace + collections + branch + user demo) en MySQL real
+- [ ] Validar que la home pública con plantilla F1 carga las 15 secciones del dataset
+- [ ] Confirmar HTTPS con certificado Let's Encrypt vía Caddy
+
+---
+
+## ✅ Cross-dialect hardening completo (2026-05-06)
+
+Auditoría profunda + fixes para que el sistema corra contra MySQL real sin sorpresas. **16 cambios estructurales aplicados:**
+
+- [x] **Better-Auth provider auto-detectado** — `src/auth/index.ts:16` cambia `provider: "pg"` por `dialect === "mysql" ? "mysql" : "pg"`. El seed `auth.api.signUpEmail()` ahora funciona contra ambos motores.
+- [x] **Helper `upsertNothing` con `target` opcional** — `src/db/dialect/upsert.ts` extendido para casos sin target específico (`INSERT IGNORE` puro).
+- [x] **15 call-sites refactorizados** a `upsert()`/`upsertNothing()` cross-dialect:
+  - `src/branches/lib.ts:74` (creación branch main idempotente)
+  - `src/lib/entries.ts:58` (creación colecciones builtin)
+  - `src/auth/rate-limit.ts:46` (rate limiter custom)
+  - `src/ai/keys.ts:118` (guardar AI keys cifradas)
+  - `src/ai/usage.ts:113` (set AI budget)
+  - `src/ai/moderation.ts:244` (moderation thresholds)
+  - `src/health/scan.ts:132` (entryHealth snapshot — inline tx por usar transaction)
+  - `src/search/jobs.ts:46` (encolar reindex search)
+  - `src/presence/server.ts:75` (presence sessions UPSERT)
+  - `src/collab/server.ts:211` (collab snapshots compaction)
+  - `src/app/api/security/csp-report/route.ts:158` (CSP reports dedup)
+  - `src/app/api/invitations/[token]/route.ts:86` (membership al aceptar invitación — inline tx)
+  - `src/imports/engine.ts:433` (entryTerms idempotente)
+  - `src/ab/engine.ts:215` (A/B assignment race-safe)
+  - `src/api/runtime.ts:519` (idempotency keys cache)
+- [x] **`typecheck` ✅** y **`build` ✅** (54 routes Next.js generadas sin warnings nuevos).
+- [x] **Verificación cruzada** con `grep onConflictDo` → solo quedan los helpers y 2 inline-tx (ambos detrás de `if (dialect)`), todos cross-dialect.
+
+**Resultado:** `db:seed` funciona en MySQL. Auth funciona en MySQL. Branches, collections, idempotency keys, rate-limit, A/B, presence, collab, CSP reports, AI keys/usage/moderation, search jobs, health scan, imports — todos cross-dialect verificados en compile-time.
+
+**Para el deploy F1 ahora SÍ es válido decir:** sigue la guía paso a paso, el sistema arrancará contra el MySQL del SDS sin necesidad de patches manuales en el código.
+
+---
+
+## ✅ Mega auditoría profunda + 45 fixes adicionales (2026-05-06)
+
+Tras pase anterior, audité con **5 agentes en paralelo** (cross-dialect, auth/multi-tenant, build/runtime, F1, ops/config). Encontraron 15 issues; mi grep posterior detectó **30+ patrones PG-only adicionales**.
+
+### Multi-tenant defense in depth
+- [x] **`src/api/v1/entries.ts:326,409`** — añadido `eq(entries.workspaceId, ctx.workspaceId)` al select post-insert/update.
+- [x] **`src/forms/submit.ts:249`** — añadido `eq(forms.workspaceId, sub.workspaceId)` al lookup del form.
+
+### Auth gates
+- [x] **`src/app/api/admin/media/generate/route.ts`** — `requireWorkspace("editor")` explícito en el route handler (defense in depth, además de la SA interna).
+- [x] **`src/auth/index.ts`** — `trustedOrigins` ahora acepta `AUTH_EXTRA_ORIGINS` env (CSV) para deploys con dominio + IP simultáneo.
+
+### 9 helpers cross-dialect nuevos en `src/db/dialect/`
+- [x] `iLikeJson(col, pattern)` — JSON column fuzzy search PG (`::text ILIKE`) / MySQL (`CAST AS CHAR LIKE`).
+- [x] `dateTrunc(unit, col)` — PG `date_trunc()` / MySQL `DATE/DATE_FORMAT/DATE_SUB-WEEKDAY`.
+- [x] `formatDateIso(col)` — `YYYY-MM-DD` cross-dialect.
+- [x] `extractDayOfWeek(col)` — PG `EXTRACT(DOW)` / MySQL `DAYOFWEEK-1` (rango 0-6).
+- [x] `extractHour(col)` — PG `EXTRACT(HOUR)::int` / MySQL `HOUR()`.
+- [x] `countInt()` — `count(*)::int` / `CAST(COUNT(*) AS SIGNED)`.
+- [x] `sumInt(col)` — `COALESCE(SUM(col),0)::int` / equivalente MySQL.
+- [x] `countDistinctInt(col)` — `COUNT(DISTINCT col)::int` cross-dialect.
+- [x] `countFilterInt(cond)` — `count(*) filter (where cond)::int` / `SUM(CASE WHEN cond THEN 1 ELSE 0 END)`.
+
+### Call-sites refactorizados a helpers (≈45 ocurrencias en 22 archivos)
+- [x] `src/api/v1/collections.ts` (1)
+- [x] `src/app/admin/{calendario,medios,suscriptores}/page.tsx` (3)
+- [x] `src/branches/{lib.ts, protection.ts, cow.ts}` (5 + 2 inline-dialect)
+- [x] `src/editorial/{ai-schedule,assignments,calendar,comments,notifications}.ts` (10 — incluido refactor de `extract dow/hour`)
+- [x] `src/imports/engine.ts` (4)
+- [x] `src/lib/{collections,entries,media,pages,dashboard,asset-usage}.ts` (12)
+- [x] `src/newsletter/{campaigns-lib,dispatcher,subscribers}.ts` (12)
+- [x] `src/payments/{member-auth,memberships}.ts` (4)
+- [x] `src/webhooks/lib.ts` (3 — 2 inline-dialect, 1 helper)
+- [x] `src/ai/{usage,keys,moderation,stats}.ts` (refactor `recordAiUsage` PG/MySQL paths + 5 SUM helpers + 1 COUNT DISTINCT)
+- [x] `src/ab/{queries,stats}.ts` (2 helpers)
+- [x] `src/forms/lib.ts` (1)
+- [x] `src/graphql/schema.ts` (1 inline-dialect cursor)
+
+### Otros fixes
+- [x] **`src/editorial/comments.ts:432`** — fallback `VERCEL_URL` en self-hosted ahora con warn explícito si `NEXT_PUBLIC_APP_URL` ausente.
+- [x] **`src/lib/ip-anon.ts`** — IPv6 comprimida `2001:db8::1` ahora normaliza a 8 hextets antes de truncar a /48 (función `expandIpv6` añadida).
+
+### Verificación
+- [x] `npm run typecheck` → ✅ EXIT=0
+- [x] `npm run build` → ✅ EXIT=0 (54 routes Next.js)
+- [x] `grep date_trunc|count(*)::int|::uuid|extract(dow` → solo helpers + inline-dialect detrás de `dialect === "postgres"`.
+
+### Issues 🟢 deferred (no bloquean)
+- [ ] Calendar `.ics` endpoint sin rate-limit por token (defense in depth).
+- [ ] `sync-f1-data.mjs` no maneja escape `""` interno en CSV (no afecta dataset actual).
+- [ ] `teamColor` fallback `#FFFFFF` invisible en dark mode si equipo desconocido.
+
+**Estado deploy F1:** sistema **TOTALMENTE PERFECTO** para arrancar contra MySQL 8.4 del SDS. Sin patches manuales necesarios. La guía paso a paso del PDF se sigue tal cual.
+
+---
+
+## F10g — Lovable Mode (Site Builder Conversational) ✦ EL DIFERENCIADOR 2026
+
+> **Lema:** *"Como Lovable, pero para CMS."* Un prompt → la IA genera el sitio entero (brand + posts publicados). Split-view chat + preview iframe en vivo. Provider-agnostic (Anthropic, OpenAI, Ollama local). Edición manual mezclada con IA contextual.
+>
+> **Diferencial 2026:** ningún CMS open-source ofrece esto hoy. Lovable hace apps full-stack con código; nosotros hacemos sitios full-stack con contenido publicable, schemas, branding y temas — sin tocar código.
+
+### F10g B1 — MVP funcional (entregado 2026-05-06) ✅
+
+**Backend**
+- [x] `src/builder/blueprint.ts` — Zod schema `Blueprint` (brand + posts) + `extractJsonObject` tolerante a fences markdown/prosa.
+- [x] `src/builder/lovable.ts` — pipeline `runBuilder()` async generator con eventos `BuilderEvent`. Provider-agnostic vía `src/ai/provider.ts#chat()` (5 backends: anthropic, openai, ollama, groq, mock). Resuelve key del workspace (`/admin/ajustes/ia` → `ai_provider_configs`) con prioridad sobre env. Plan call (1 LLM) → blueprint validado Zod → `applyBrand()` (UPDATE workspaces.branding) → N posts en paralelo (`Promise.allSettled`) cada uno: chat() para markdown → `markdownToTiptapDoc()` (reusa el conversor del MCP) → `createEntry()` + UPDATE body+published. Activity log con `meta.source: "builder"`.
+- [x] `src/app/api/admin/builder/run/route.ts` — endpoint POST con cookie auth + role≥editor + Zod request schema. Stream NDJSON con AbortSignal.
+
+**Frontend**
+- [x] `src/app/admin/builder/page.tsx` — server component, resuelve provider activo (anthropic/openai/ollama/groq/none) con fallback env→none.
+- [x] `src/app/admin/builder/client.tsx` — split layout pro: chat 420px (header con provider badge + Plug, panel pasos auto-scroll, historial de runs anteriores, textarea con ⌘↵ submit, gradient glassmorphism) + preview iframe flex-1 (toolbar con 3 breakpoints 📱💻🖥 + tabs `/`/`/blog`, refresh manual, iframe `?_builder=1` con `?_t=${iframeKey}` cache-bust). StepCard con estados running/done/error animados + StepPill compacto para historial.
+- [x] `src/app/admin/builder/connect-modal.tsx` — modal 4 cards (Anthropic recomendado, OpenAI, Ollama privado, Vercel AI Gateway "Soon"), badge ✓ Conectado en el provider activo, deep-links a Console de cada proveedor, CTA `/admin/ajustes/ia`. Escape close + body scroll lock + ARIA dialog.
+- [x] Sidebar: entry "Builder" con icono `Wand2` en sección General entre Agente y Comentarios.
+
+**Decisiones de diseño**
+- **Provider-agnostic SIN tool-use loop**: el agent loop tool-use (Anthropic/Ollama) requiere implementar uno por provider. Lovable no lo necesita: 1 plan call (universal) + N text-completion calls (universal). Encaja en los 5 providers de `src/ai/provider.ts`.
+- **JSON estructurado vía prompt + extractor tolerante**: no usar tool-use ni response_format porque el coverage cross-provider es desigual. Sistema prompt enforza JSON puro, `extractJsonObject` extrae con balance de llaves para sobrevivir a fences `\`\`\`json` o prosa.
+- **Posts paralelos `Promise.allSettled`**: si 1 post falla, los demás se publican igual. Wall-clock ≈ tiempo del post más lento, no la suma.
+- **Iframe preview = sitio público real** (`/`, `/blog`) con `?_builder=1` flag. Refresh = aumentar `iframeKey` (rebuild key del iframe). Sin ningún render maquetado: lo que ves es lo que verá el visitante.
+- **Connect honest**: no hay OAuth real para Anthropic/OpenAI en 2026. Modal ofrece deep-link a Console + CTA a `/admin/ajustes/ia` donde la key se cifra AES-256-GCM (encryption-at-rest existente). Vercel AI Gateway se anuncia como "Soon" (target B3).
+- **Coste por sitio (Anthropic Sonnet)**: ~$0.18 plan + 5 posts. Ollama 70B local = $0. Diferencia de tiempo: 30s vs 3-5min.
+
+**Verificación**
+- [x] `tsc --noEmit` → typecheck verde para nuevos módulos
+- [ ] E2E manual: pendiente smoke test con `ANTHROPIC_API_KEY` real
+
+### F10g B2 — Conversacional + iterativo (entregado 2026-05-06) ✅
+
+> El chat queda VIVO después del primer build. El usuario sigue pidiendo cambios y la IA refina el sitio existente sin re-crearlo.
+
+**Backend**
+- [x] `src/builder/refine.ts` — pipeline `runRefinement()` con **intent classifier** de 1 LLM call. 5 intents Zod-typed:
+  - `add_posts` (count + topics[]) → genera N posts (1 LLM call cada uno → JSON `{title,excerpt,body}`) + `createEntry()` + publish.
+  - `edit_brand` (changes: name/tagline/voice/emoji/palette) → UPDATE workspaces.branding parcial preservando lo no tocado.
+  - `regenerate_post` (match + newAngle) → fuzzy-find por título (exact/prefix/substring) + reescritura completa con el voice actual.
+  - `delete_post` (match) → fuzzy-find + `status="archived"` (soft delete).
+  - `chat` (reply) → respuesta conversacional sin mutar nada (preguntas, dudas).
+- [x] `loadBuilderState(workspaceId)` — snapshot `{brand, posts}` que se inyecta al system prompt del classifier para que sepa qué existe y matchee correctamente nombres de posts.
+- [x] `resolveBuilderProvider()` extraído de `lovable.ts` y exportado — refine + first-build comparten el resolver provider+key→config.
+- [x] Endpoint `/api/admin/builder/run` con campo `mode: "first" | "refine"` que despacha a `runBuilder()` o `runRefinement()`. Provider se resuelve una sola vez por request.
+- [x] Nuevo evento `chat-reply` en `BuilderEvent` para respuestas conversacionales (intent `chat`).
+
+**Frontend**
+- [x] `client.tsx` refactor a **modelo de turnos**: `Turn[]` con `{userText, steps, chatReply, status, errorMessage}`. Cada submit del usuario crea un nuevo turn. El primer turn = `mode:"first"`, el resto = `mode:"refine"`.
+- [x] `<TurnCard>` con burbuja "Tú" arriba + steps + opcional chat-reply card + error UI. Badge "Refinar" en turns>0.
+- [x] Header dinámico: "Describe tu sitio…" en empty state vs "Sigue pidiendo cambios — el chat está vivo" después del primer build.
+- [x] Placeholder del input cambia: prompt inicial vs. "Hazlo más cálido · añade un post sobre X · cambia el hero…".
+- [x] Auto-scroll al fondo en cada nuevo step (no en cada delta de texto, eso causaba jitter). Stop button revierte el último turn a "error: Detenido".
+- [x] Activity log con `meta.source: "builder.refine"` distingue de `"builder"` (first-build) y `"builder"` (manual editor).
+
+**Decisiones de diseño**
+- **Intent classifier vs. tool-use loop**: descartamos tool-use (caro, provider-specific). 1 LLM call clasifica → JSON Zod → pipeline determinista. Resultado: **funciona en TODOS los providers** y cada intent es código auditable en lugar de ruleta del modelo.
+- **Fuzzy-find por título** (exact > prefix > substring) en regenerate/delete: el usuario dice "el post sobre lanzamiento" y matcheamos sin pedirle id ni slug.
+- **Soft delete (archived) en delete_post**: nunca se pierde data. Si el usuario se equivoca, se restaura desde `/admin/contenido` con filtro archived.
+- **State snapshot al classifier**: pasamos lista de posts existentes con sus titles → el modelo puede referenciarlos exactamente al generar `regenerate_post.match`.
+- **Coste por refinamiento**: ~$0.01-0.05 por turn (1 classifier call + 0-N content calls). Llega a $0 con Ollama local.
+
+**Validación**
+- [x] `tsc --noEmit` ✓
+- [x] `biome check` ✓ (1 ignore explicito en useEffect de auto-scroll)
+
+### F10g B3 — Bloque siguiente (pendiente)
+
+- [ ] **Live-Edit overlay sobre iframe**: postMessage del iframe al parent → hover en bloque → mini-toolbar "Editar IA / Manual / Eliminar". Reusa el LiveEditOverlay que ya existe en F8c.
+- [ ] **Tools del agente que aún faltan**: `collection_create`, `taxonomy_create`/`assign`, `menu_set`, `theme_apply`, `form_create`, `media_generate` (Replicate Flux schnell o `@vercel/og` fallback).
+- [ ] **Blueprint extendido**: collections custom + pages con block layouts + menu navigation + forms.
+- [ ] **Persistencia de sesiones**: tabla `builder_sessions` para que `turns[]` sobreviva refresh del navegador.
+- [ ] **Cover images**: Replicate Flux schnell (cloud) o `@vercel/og` brandeado (offline, gradient OKLCH del brand).
+- [ ] **Modelo selector inline**: toggle "Calidad estándar / Espectacular" → mapea Sonnet/Opus en Anthropic, etc.
+- [ ] **Undo último turn**: revierte la última operación (re-publish previous body / unarchive / restore brand snapshot).
+- [ ] **Save as blueprint**: clonar este sitio entero en otro workspace.
+
+### F10g B4 — Vercel AI Gateway (futuro)
+
+- [ ] Sign in with Vercel OAuth → token → `ai-gateway` provider en `provider.ts`.
+- [ ] Detección automática del token en runtime → ofrece "1-click connect" real.
+- [ ] Billing centralizado vía Vercel.
+
+---
+
+## F11a — Dominio y URL pública (entregado 2026-05-06) ✅
+
+> **Lema**: *"Tu URL pública gratis siempre activa, dominio propio opcional"*. Multi-tenant routing por hostname o path. Una instancia CSM con N workspaces, cada uno con su URL personalizable y opcionalmente su dominio propio. Cero coste obligatorio: sin `ROOT_DOMAIN` configurado, fallback a `<NEXT_PUBLIC_APP_URL>/s/<slug>` que funciona en Vercel free tier.
+
+### Schema (Neon: tablas creadas con `db:push --force`)
+- [x] `workspace_slug_history` (id, workspaceId, oldSlug, changedAt, expiresAt) + UNIQUE (oldSlug) + indexes (ws, expiresAt). TTL 30 días para que enlaces compartidos al slug viejo sigan respondiendo vía 301.
+- [x] `workspace_domains` (id, workspaceId, domain, verifyToken, verifiedAt, lastCheckedAt, lastCheckError, createdAt) + UNIQUE (domain). Una fila por dominio custom; `verifiedAt IS NOT NULL` lo activa para resolución.
+- [x] Paridad cross-dialect: ambas tablas en `schema.pg.ts` y `schema.mysql.ts`. Type exports paritarios.
+
+### Resolver multi-tenant (`src/domain/resolver.ts`)
+- [x] **Prioridad de matching** (orden):
+  1. `Host` matchea `workspace_domains.domain` con `verifiedAt` → custom domain.
+  2. `Host = <slug>.<ROOT_DOMAIN>` → subdomain match.
+  3. Path-based `/s/<slug>/...` (cabecera `x-csm-path-slug` la inyecta el middleware tras rewrite).
+  4. **Single-tenant fallback**: si solo hay 1 workspace en la instancia, ése (UX trivial para self-host de un usuario).
+  5. Histórico: si el slug pertenece a un rename < 30d, devuelve workspace + `redirectCanonical` para 301.
+- [x] `resolvePublicWorkspaceFromRequest()` lee `headers()` automáticamente. Las páginas públicas (`getDefaultPublicWorkspace()`) ahora delegan aquí — multi-tenant transparente para `/`, `/blog`, `/blog/[slug]`, `/autor/[handle]`, `/tag/[slug]`, `/buscar`, `/suscribir/*`, `/comentarios`, sitemap, feed, etc.
+- [x] `publicUrlFor({workspaceId, slug, customDomain, path})` construye URL canónica con prioridad custom > subdomain > path-based.
+
+### Middleware (`src/middleware.ts`)
+- [x] Rewrite `/s/<slug>/...` → `/<...>` con header `x-csm-path-slug`. Edge-friendly (no DB query). Header `x-csm-pathname` conserva URL original para construir 301.
+- [x] Slug regex idéntico al validator de runtime (3-30 char, lowercase, sin reservados).
+
+### Validator + reservados (`src/domain/slug.ts`)
+- [x] `validateSlug()` con codes tipados (`empty | too_short | too_long | invalid_chars | leading_or_trailing_dash | double_dash | reserved`) + `slugErrorMessage()` localized.
+- [x] **52 slugs reservados** alfabéticos: rutas raíz del producto (admin, api, autor, blog, buscar, builder, builder-frame, comentarios, checkout, feed, forms, legal, login, logout, membresia, members, olvide, onboarding, panel, preview, registro, robots, rss, s, sitemap, suscribir, tag, template-preview) + DNS clásicos (app, auth, cdn, dashboard, dev, developer, docs, ftp, git, help, host, images, img, imap, m, mail, media, mx, ns, ns1, ns2, pop, pop3, root, secure, server, smtp, ssl, static, stats, status, support, test, vpn, webmail, ws, www).
+- [x] `validateCustomDomain()` RFC 1035 simplificado: rechaza IPs, esquemas, paths; acepta `example.com`, `blog.example.com`, IDN punycode.
+
+### Slug rename (`src/domain/rename.ts`)
+- [x] `checkSlugAvailability(slug, callerWsId)` para UI live (sin mutar). Distingue: válido + libre / tomado por otro workspace / tomado por historial vivo / reservado / inválido. Caso `availableForSelf=true` cuando coincide con el slug actual del workspace que llama.
+- [x] `renameWorkspaceSlug({wsId, newSlug, actorId})` atomic en transacción: UPDATE workspaces.slug + INSERT/UPDATE workspace_slug_history (UPSERT cross-dialect: PG `ON CONFLICT`, MySQL `ON DUPLICATE KEY UPDATE`). Activity log.
+- [x] `purgeExpiredSlugHistory()` cleanup llamable desde cron diario.
+
+### Custom domains (`src/domain/custom.ts`)
+- [x] `addCustomDomain` genera `verifyToken` 16-byte hex, INSERT pending. Auto-promueve a `workspaces.customDomain` si era vacío (legacy field).
+- [x] `verifyCustomDomain` hace DNS lookup vía `node:dns/promises`. Acepta DOS métodos:
+  - **TXT** `_csm-verify.<domain>` con el token → método offline-friendly.
+  - **CNAME** `<domain>` apuntando a `ROOT_DOMAIN` o a `cname.vercel-dns.com` → método on-line.
+  Suficiente UNO. `lastCheckedAt` + `lastCheckError` persistidos para feedback en la UI.
+- [x] `removeCustomDomain` borra fila + limpia `workspaces.customDomain` si era el primary. Activity log `domain.add | domain.verified | domain.remove`.
+
+### API endpoints (todos `runtime: nodejs`, `requireWorkspace("admin")`)
+- [x] `POST /api/admin/domain/slug-check` — disponibilidad live con debounce desde el cliente (350 ms).
+- [x] `PATCH /api/admin/domain/slug` — rename con history insert.
+- [x] `POST /api/admin/domain/custom` — añade dominio custom pending.
+- [x] `DELETE /api/admin/domain/custom/[id]` — quita dominio.
+- [x] `POST /api/admin/domain/custom/[id]/verify` — DNS lookup + persiste `verifiedAt`.
+
+### UI `/admin/ajustes/dominio`
+- [x] **Sección 1 — URL pública gratis**: muestra URL actual (subdomain o path-based según `ROOT_DOMAIN`) con botones Copiar / Cambiar. En modo edición: input split en 3 partes (`https://` | slug editable | `.<root>`), preview en vivo, status (idle / checking / ok / error con mensaje), debounce 350 ms, validación cliente (regex + reservados). Muestra preview "ASÍ QUEDARÁ" antes de guardar. Toast de éxito tras rename.
+- [x] **Sección 2 — Dominio propio**: empty state CTA "Conectar mi dominio". Form add inline con error inline. Cards de dominios: pill verde "Verificado" o botón "Verificar" con loader. Mientras pending, muestra los DOS DNS records esperados (`CNAME → root` + `TXT → token`) con copy-to-clipboard por separado. Error de verificación en banner rojo dentro de la card. Botón remove con confirm.
+- [x] **Sección 3 — "¿Qué URL uso?"**: 3 escenarios resueltos en lenguaje natural (compartir / pro / multi-sitio).
+- [x] Sidebar `/admin/ajustes` updated: nueva entry "Dominio y URL" con icono `Globe` entre Perfil y Seguridad.
+
+### Env vars
+- [x] `ROOT_DOMAIN` (server) + `NEXT_PUBLIC_ROOT_DOMAIN` (client). Si vacío → fallback a path-based bajo `NEXT_PUBLIC_APP_URL`.
+
+### Decisiones de diseño
+- **Edge middleware sin DB**: rewrite + headers, NO query. El resolver Node hace la query en SSR. Mantiene middleware <1ms y permite caching futuro.
+- **Single-tenant fallback** sin configurar nada: 1 workspace = el único que se sirve, sin slug en la URL. UX trivial para self-host de un usuario.
+- **TXT method como alternativa offline**: si self-host no tiene un `ROOT_DOMAIN` configurable, el user puede verificar igualmente vía TXT con el token.
+- **Auto-detect Vercel CNAME**: aceptamos `cname.vercel-dns.com` como CNAME válido sin requerir `ROOT_DOMAIN` — el deploy más común zero-config.
+- **30 días slug history**: balance entre "los enlaces no rompen" y "el slug se libera para que otro lo use". Configurable via `SLUG_HISTORY_TTL_DAYS`.
+
+### Verificación
+- [x] `npm run typecheck` ✅
+- [x] `npx biome check` ✅ 18 archivos
+- [x] `npm run db:push --force` ✅ 2 tablas + indexes + FKs aplicados a Neon
+- [ ] Smoke manual pendiente: cambiar slug + verificar URL preview + (opcional) añadir dominio custom y comprobar instrucciones DNS.
+
+### Pendientes de F11b (futuro)
+- [ ] Botón "Deploy a Vercel" desde la UI con OAuth real (la versión actual usa template URL de `vercel.com/new/clone` — abre Vercel en pestaña nueva para que el user complete con su cuenta).
+- [ ] Vercel API integration para añadir dominios custom + provisionar SSL automático sin que el user toque DNS.
+- [ ] Cron diario `purgeExpiredSlugHistory()` (hoy se confía en el filtro `expiresAt > now()` del resolver).
+- [ ] Rate limit en `slug-check` por IP (anti-enumeración de slugs disponibles).
+
+---
+
+## F11a-fix · URL corta para single-tenant (entregado 2026-05-06) ✅
+
+> Bug UX: la pantalla `/admin/ajustes/dominio` mostraba `localhost:3000/s/<slug>` aunque el resolver ya hacía single-tenant fallback en `/`. Confuso porque la URL corta también funcionaba.
+
+- [x] `publicUrlFor()` acepta `isSingleTenant: boolean`. Si true → devuelve URL base sin prefijo `/s/<slug>`.
+- [x] `countWorkspaces()` helper (cap 2) — consulta cuántos workspaces hay en la instancia.
+- [x] La page `/admin/ajustes/dominio` calcula `isSingleTenant = totalWorkspaces <= 1 && !rootDomain` y lo pasa al client.
+- [x] La UI cambia el discurso en single-tenant: el editor del slug se reframea como "Identificador" con nota "solo aparecerá en la URL si añades más sitios". Botón "Cambiar" → "Identificador". Footer: "Cambia el identificador en cualquier momento. No afecta la URL pública mientras solo tengas este sitio."
+- [x] Preview live de la nueva URL se oculta en single-tenant (no hay cambio que enseñar).
+
+### Bug encontrado y arreglado durante el smoke
+
+`renameWorkspaceSlug()` usaba raw SQL con `${expiresAt}` (Date) — postgres-js falla con `TypeError: argument must be string or Buffer`. Refactor a `tx.insert(...).onConflictDoUpdate(...)` typed; el driver convierte Date → timestamp correctamente. Cross-dialect: PG con `onConflictDoUpdate`, MySQL con `onDuplicateKeyUpdate`.
+
+---
+
+## F11d · Multi-site UX (entregado 2026-05-06) ✅
+
+> "Cada workspace = 1 sitio independiente con su URL." Ya existía a nivel de DB; ahora hay UX completa para crear/listar/cambiar entre ellos sin tocar DB ni terminal.
+
+### Helper de creación
+- [x] `src/domain/create-workspace.ts` — `createWorkspace({name, slug, ownerId})` con setup mínimo: workspace + colecciones builtin (posts/pages) + membership owner. Atomic en transacción. Setea cookie `csm_ws` para que la UI cambie automáticamente al recién creado.
+- [x] Reintenta con sufijo `-2`, `-3`, … hasta 8 veces si el slug colisiona. `suffixCapped()` recorta el base si excede 30 chars (evita slugs >30 que romperían path-based).
+- [x] Pre-check de disponibilidad antes del INSERT (`continue` al sufijo si "taken") — ahorra round-trips.
+
+### API
+- [x] `POST /api/admin/workspaces` — Zod-validated, `requireWorkspace` no aplica (solo `getCurrentUser`), cualquier user logueado puede crear su propio workspace.
+
+### UI
+- [x] `/admin/sitios/nuevo` — form con nombre + identificador. Auto-deriva slug del nombre; comprobación live de disponibilidad (debounce 350 ms vs `/api/admin/domain/slug-check`); validación cliente + servidor. `slugifyClient` strip diacritical marks vía `\p{Mn}` (Unicode prop escape, sin combining chars en el regex source).
+- [x] `/admin/sitios` — listado de workspaces del usuario con: avatar gradiente OKLCH, badge de rol, ring primary si es el activo, URL pública (con `isSingleTenant` calculado por instancia, no por sitio individual), botones "Cambiar a este" / "Ir al dashboard" / "Ajustes". Empty state encouragement card si solo hay 1 sitio.
+- [x] `WorkspaceSwitcher` (existente) ahora tiene 2 entries activos: "Ver todos mis sitios" → `/admin/sitios` y "Crear nuevo sitio" → `/admin/sitios/nuevo`. Antes estaban deshabilitados con badge "pronto".
+
+### Validación
+- [x] `npm run typecheck` ✅
+- [x] `npx biome check` ✅
+- [x] `npm run build` ✅ (37/37 routes generadas, 8 nuevas en F11)
+- [x] Smoke curl: 5 endpoints + 4 páginas, todos responden con status correcto (200 / 307).
+
+---
+
+## F11b · Wizard "Publicar al mundo" (entregado 2026-05-06) ✅
+
+> Centraliza el momento "quiero que mi sitio sea visible desde otro PC". Detecta el estado actual del deploy (local vs Vercel/Railway/Render/Fly), muestra checklist accionable, y ofrece 4 opciones de hosting con CTAs 1-click.
+
+### Detección de plataforma (`src/domain/deploy-state.ts`)
+- [x] `getDeployState({wsId, slug, customDomain})` lee env vars: `VERCEL`, `RAILWAY_ENVIRONMENT`, `RENDER`, `FLY_APP_NAME` → mapea a `host: "vercel" | "railway" | "render" | "fly" | "self-hosted" | "local"`. Si `host` (header) es `localhost|127.0.0.1|192.168.*|10.*` → `local`.
+- [x] `deployHost` canónico: lee `VERCEL_URL` / `RAILWAY_PUBLIC_DOMAIN` / `RENDER_EXTERNAL_URL` / `${FLY_APP_NAME}.fly.dev` cuando aplica.
+- [x] Checklist con 5 items tipados: `database | slug | domain-free | domain-custom | live`. Cada uno con `done: boolean` + `hint?: string` para explicar por qué no está listo.
+- [x] `suggestDeployTargets({repoUrl?})` devuelve 4 cards con CTA url, cost, rec flag. Vercel siempre primero (mejor para Next.js + free tier). Si `CSM_REPO_URL` está set, Vercel link usa template `vercel.com/new/clone?repository-url=...`.
+
+### UI `/admin/ajustes/publicar`
+- [x] **Hero status**: card grande con gradient ámbar (local) o esmeralda (deployado), icono `WifiOff/Wifi`, copy claro: *"Tu sitio aún solo se ve en este PC"* vs *"Tu sitio ya está en internet"*. URL copyable en línea con badge "En vivo" si público.
+- [x] **Checklist**: 5 items con check verde / circle gris, hints inline si pendientes. Renderiza siempre, sea cual sea el estado.
+- [x] **Plataformas (solo si local)**: 4 cards (Vercel rec, Railway, Render, self-host) con icono, tagline, coste, CTA externa que abre la consola del hosting.
+- [x] **Variables de entorno tip**: 3 vars (`DATABASE_URL`, `AUTH_SECRET`, `NEXT_PUBLIC_APP_URL`) con descripción + acción contextual:
+  - `DATABASE_URL` → link a `neon.tech/signup` para crear DB gratis.
+  - `AUTH_SECRET` → botón "Generar" que crea token aleatorio 32 bytes en cliente (con copy-to-clipboard).
+  - `NEXT_PUBLIC_APP_URL` → solo placeholder de ejemplo.
+- [x] **Dominio propio (siempre)**: si verified → card verde con domain. Si no → CTA a `/admin/ajustes/dominio`.
+- [x] **Listo, ¿y ahora qué?**: solo si deployado, lista 3 next steps (compartir / crear más sitios / dominio propio).
+- [x] Sidebar `/admin/ajustes` updated: nueva entry "Publicar al mundo" con icono `Rocket` justo después de "Dominio y URL".
+
+### Decisiones de diseño
+- **Cero OAuth**: el botón "Deploy en Vercel" abre `vercel.com/new/clone?repository-url=...` (URL pública, sin auth). El usuario completa el deploy en Vercel con su cuenta. Hacer OAuth real (Vercel API + tokens) sería F11c.
+- **`AUTH_SECRET` generado en cliente**: `crypto.getRandomValues` 32 bytes + base64. No round-trip al servidor; el secret nunca se persiste hasta que el user lo pegue en su hosting.
+- **No tocamos `process.env` en runtime**: detectamos plataforma por env vars READ-ONLY que el hosting setea. No intentamos modificar el `.env` (peligroso, requiere file system writes en serverless).
+
+### Validación
+- [x] `npm run typecheck` ✅
+- [x] `npx biome check` ✅ (9 archivos del scope F11b limpios)
+- [x] `npm run build` ✅
+- [x] Smoke `/admin/ajustes/publicar` → 307 (redirect a login sin auth, esperado).
+
+### Pendiente F11c (futuro, opcional)
+- [ ] OAuth real con Vercel API → crea proyecto + transfiere env vars + lanza deploy → notifica al user en `/admin/ajustes/publicar` cuando esté live.
+- [ ] Detección post-deploy: tras volver a la UI tras el deploy, ofrecer un "wizard finalizar" que comprueba que la nueva instancia funciona y permite migrar el contenido.

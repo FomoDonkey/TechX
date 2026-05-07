@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { dateTrunc, formatDateIso } from "@/db/dialect";
 import {
   activityLog,
   analyticsEvents,
@@ -10,7 +11,7 @@ import {
   users,
 } from "@/db/schema";
 import { POSTS_SLUG } from "@/lib/entries";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNull, sql } from "drizzle-orm";
 
 export type Series = number[];
 
@@ -113,32 +114,32 @@ export async function loadDashboardKpis(workspaceId: string): Promise<DashboardK
     viewsSeriesRows,
   ] = await Promise.all([
     db
-      .select({ status: entries.status, n: sql<number>`count(*)::int` })
+      .select({ status: entries.status, n: count() })
       .from(entries)
       // F9b: KPIs sólo cuentan main, no forks de branches.
       .where(and(eq(entries.workspaceId, workspaceId), isNull(entries.branchId)))
       .groupBy(entries.status),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: count() })
       .from(subscribers)
       .where(eq(subscribers.workspaceId, workspaceId)),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: count() })
       .from(comments)
       .innerJoin(entries, eq(comments.entryId, entries.id))
       .where(eq(entries.workspaceId, workspaceId)),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: count() })
       .from(analyticsEvents)
       .where(eq(analyticsEvents.workspaceId, workspaceId)),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: count() })
       .from(members)
       .where(eq(members.workspaceId, workspaceId)),
     db
       .select({
-        day: sql<string>`date_trunc('day', ${entries.createdAt})::date`,
-        n: sql<number>`count(*)::int`,
+        day: formatDateIso(entries.createdAt),
+        n: count(),
       })
       .from(entries)
       .where(
@@ -149,34 +150,34 @@ export async function loadDashboardKpis(workspaceId: string): Promise<DashboardK
           isNull(entries.branchId),
         ),
       )
-      .groupBy(sql`1`),
+      .groupBy(dateTrunc("day", entries.createdAt)),
     db
       .select({
-        day: sql<string>`date_trunc('day', ${subscribers.createdAt})::date`,
-        n: sql<number>`count(*)::int`,
+        day: formatDateIso(subscribers.createdAt),
+        n: count(),
       })
       .from(subscribers)
       .where(and(eq(subscribers.workspaceId, workspaceId), gte(subscribers.createdAt, since)))
-      .groupBy(sql`1`),
+      .groupBy(dateTrunc("day", subscribers.createdAt)),
     db
       .select({
-        day: sql<string>`date_trunc('day', ${comments.createdAt})::date`,
-        n: sql<number>`count(*)::int`,
+        day: formatDateIso(comments.createdAt),
+        n: count(),
       })
       .from(comments)
       .innerJoin(entries, eq(comments.entryId, entries.id))
       .where(and(eq(entries.workspaceId, workspaceId), gte(comments.createdAt, since)))
-      .groupBy(sql`1`),
+      .groupBy(dateTrunc("day", comments.createdAt)),
     db
       .select({
-        day: sql<string>`date_trunc('day', ${analyticsEvents.createdAt})::date`,
-        n: sql<number>`count(*)::int`,
+        day: formatDateIso(analyticsEvents.createdAt),
+        n: count(),
       })
       .from(analyticsEvents)
       .where(
         and(eq(analyticsEvents.workspaceId, workspaceId), gte(analyticsEvents.createdAt, since)),
       )
-      .groupBy(sql`1`),
+      .groupBy(dateTrunc("day", analyticsEvents.createdAt)),
   ]);
 
   const counts: Record<string, number> = { draft: 0, published: 0 };

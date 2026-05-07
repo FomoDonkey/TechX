@@ -1,4 +1,4 @@
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
 import { insertReturning } from "@/db/dialect";
 import { type Collection, collections, entries } from "@/db/schema";
 import { type CollectionSchema, readCollectionSchema } from "@/lib/fields";
@@ -41,8 +41,16 @@ export async function listCollections(workspaceId: string): Promise<CollectionLi
       isBuiltin: collections.isBuiltin,
       createdAt: collections.createdAt,
       // F9b: contadores reflejan main (excluye forks de branches).
-      entryCount: sql<number>`(
+      // Cross-dialect: PG `count(*)::int` vs MySQL `CAST(COUNT(*) AS SIGNED)`.
+      entryCount:
+        dialect === "postgres"
+          ? sql<number>`(
         SELECT count(*)::int FROM ${entries}
+        WHERE ${entries.collectionId} = ${collections.id}
+          AND ${entries.branchId} IS NULL
+      )`
+          : sql<number>`(
+        SELECT CAST(COUNT(*) AS SIGNED) FROM ${entries}
         WHERE ${entries.collectionId} = ${collections.id}
           AND ${entries.branchId} IS NULL
       )`,

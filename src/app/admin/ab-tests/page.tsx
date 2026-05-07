@@ -6,7 +6,7 @@ import { Beaker, FlaskConical, Pause, PlayCircle, Sparkles, Trophy } from "lucid
 import type { Metadata } from "next";
 import { AbTestsBoard } from "./_client";
 
-export const metadata: Metadata = { title: "A/B Tests · CSM" };
+export const metadata: Metadata = { title: "A/B Tests · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function AbTestsPage() {

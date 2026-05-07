@@ -16,10 +16,10 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  if (!isUuid(id)) return { title: "Símbolo · CSM" };
+  if (!isUuid(id)) return { title: "Símbolo · techx" };
   const ctx = await requireWorkspace("editor");
   const s = await getSymbolById(ctx.workspace.id, id);
-  return { title: s ? `${s.name} · Símbolos · CSM` : "Símbolo · CSM" };
+  return { title: s ? `${s.name} · Símbolos · techx` : "Símbolo · techx" };
 }
 
 export default async function SymbolEditorPage({

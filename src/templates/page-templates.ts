@@ -12,7 +12,13 @@
 
 import { type BlockNode, newId } from "@/blocks/types";
 
-export type PageTemplateCategory = "saas" | "portfolio" | "blog" | "newsletter" | "launch";
+export type PageTemplateCategory =
+  | "saas"
+  | "portfolio"
+  | "blog"
+  | "newsletter"
+  | "launch"
+  | "sports";
 
 /**
  * Mini-tema visual de la plantilla. Sobreescribe las CSS variables del
@@ -249,6 +255,20 @@ const THEME_NEON_AGENCY: TemplateTheme = {
   },
 };
 
+// Pure black + neon red Ferrari — F1 Racing
+const THEME_F1_RACING: TemplateTheme = {
+  vars: {
+    "--background": "oklch(0.05 0 0)",
+    "--foreground": "oklch(0.98 0 0)",
+    "--card": "oklch(0.10 0 0)",
+    "--muted": "oklch(0.15 0 0)",
+    "--muted-foreground": "oklch(0.70 0 0)",
+    "--primary": "oklch(0.55 0.25 25)",
+    "--accent": "oklch(0.95 0 0)",
+    "--border": "oklch(0.18 0 0)",
+  },
+};
+
 // ============================================================
 // TEMPLATES — cada una con composición DISTINTA
 // ============================================================
@@ -413,6 +433,62 @@ export const PAGE_TEMPLATES: PageTemplate[] = [
   },
 
   // ---------------------------------------------------------------
+  // 9. Formula 1 — Grand Prix dark + red neon (sports/championship)
+  // ---------------------------------------------------------------
+  {
+    id: "f1-grand-prix",
+    name: "F1 Grand Prix — Inmersivo",
+    description:
+      "Hero countdown live al próximo GP con scanlines + velocity lines, grid de pilotos 3D tilt cards con colores del equipo, doble marquee de constructores, calendario sticky stack, counters animados y CTA dramático. Datos reales temporada 2025.",
+    category: "sports",
+    accent: "marquee",
+    tags: ["F1", "Deporte", "Dark", "Neon Red", "3D Tilt"],
+    suggestedTitle: "Campeonato Formula 1",
+    theme: THEME_F1_RACING,
+    buildLayout: () => [
+      node("tpl-f1-hero", {}),
+
+      // === TEMPORADA 2025 — separador rojo ===
+      node("tpl-f1-season-banner", {
+        year: "2025",
+        label: "TEMPORADA EN CURSO",
+        description:
+          "Desde Melbourne hasta Abu Dhabi · 24 Grandes Premios · 10 escuderías · 21 pilotos",
+        variant: "red",
+      }),
+      node("tpl-f1-last-race", {}),
+      node("tpl-f1-drivers", {}),
+      node("tpl-f1-standings", {}),
+      node("tpl-f1-constructors", {}),
+      node("tpl-f1-constructors-table", {}),
+      node("tpl-f1-calendar", {}),
+      node("tpl-f1-tracks", {}),
+      node("tpl-f1-dotd", {}),
+      node("tpl-f1-stats", {}),
+
+      // === HISTÓRICO — separador neutro ===
+      node("tpl-f1-season-banner", {
+        year: "2022—24",
+        label: "PALMARÉS HISTÓRICO",
+        description: "Las temporadas anteriores en una sola mirada · Campeones reales del dataset",
+        variant: "neutral",
+      }),
+      node("tpl-f1-champions", {}),
+
+      // === TEMPORADA 2026 — separador violeta ===
+      node("tpl-f1-season-banner", {
+        year: "2026",
+        label: "NUEVA ERA · EN CURSO",
+        description: "Motores 100% sostenibles · Aerodinámica activa · Monoplazas más ligeros",
+        variant: "violet",
+      }),
+      node("tpl-f1-2026", {}),
+
+      node("tpl-f1-cta", {}),
+    ],
+  },
+
+  // ---------------------------------------------------------------
   // 8. Agencia Brutal — Michael Smith Editorial Dark
   // ---------------------------------------------------------------
   {
@@ -450,4 +526,5 @@ export const TEMPLATE_CATEGORIES: Array<{
   { value: "blog", label: "Blog" },
   { value: "newsletter", label: "Newsletter" },
   { value: "launch", label: "Lanzamiento" },
+  { value: "sports", label: "Deportes" },
 ];

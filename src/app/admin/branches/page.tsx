@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateBranchButton } from "./create-branch-button";
 
-export const metadata: Metadata = { title: "Branches · CSM" };
+export const metadata: Metadata = { title: "Branches · techx" };
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = {

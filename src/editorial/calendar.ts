@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { countInt, dateTrunc, formatDateIso } from "@/db/dialect";
 import {
   type EntryPriority,
   type EntryStatus,
@@ -8,7 +9,7 @@ import {
   entryAssignments,
   users,
 } from "@/db/schema";
-import { and, asc, between, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, count, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 export type CalendarFilter = {
   workspaceId: string;
@@ -157,7 +158,7 @@ export async function listCalendarItems(filter: CalendarFilter): Promise<Calenda
     db
       .select({
         entryId: editorialThreads.entryId,
-        n: sql<number>`count(*)::int`,
+        n: countInt(),
       })
       .from(editorialThreads)
       .where(
@@ -229,10 +230,11 @@ export async function calendarHeatmap(
   to: Date,
 ): Promise<Array<{ day: string; count: number }>> {
   if (!db) return [];
+  const dayBucket = dateTrunc("day", entries.scheduledAt);
   const rows = await db
     .select({
-      day: sql<string>`to_char(date_trunc('day', ${entries.scheduledAt}), 'YYYY-MM-DD')`,
-      count: sql<number>`count(*)::int`,
+      day: formatDateIso(entries.scheduledAt),
+      count: count(),
     })
     .from(entries)
     .where(
@@ -243,6 +245,6 @@ export async function calendarHeatmap(
         isNull(entries.branchId),
       ),
     )
-    .groupBy(sql`date_trunc('day', ${entries.scheduledAt})`);
-  return rows.map((r) => ({ day: r.day, count: r.count }));
+    .groupBy(dayBucket);
+  return rows.map((r) => ({ day: r.day, count: Number(r.count) }));
 }

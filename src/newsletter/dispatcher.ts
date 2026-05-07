@@ -11,7 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db } from "@/db/client";
-import { atomicClaim, atomicClaimMany } from "@/db/dialect";
+import { atomicClaim, atomicClaimMany, countInt } from "@/db/dialect";
 import {
   type Campaign,
   type CampaignRecipient,
@@ -92,7 +92,7 @@ export async function expandCampaignRecipients(campaignId: string): Promise<numb
 
   // Fast path: si ya hay recipients, devolver count actual sin tocar nada.
   const [existing] = await db
-    .select({ c: sql<number>`count(*)::int` })
+    .select({ c: countInt() })
     .from(campaignRecipients)
     .where(eq(campaignRecipients.campaignId, campaignId));
   if ((existing?.c ?? 0) > 0) return existing?.c ?? 0;
@@ -316,7 +316,7 @@ async function markFinishedCampaigns(): Promise<void> {
     .where(eq(campaigns.status, "sending"));
   for (const c of inProgress) {
     const [pendingCount] = await db
-      .select({ c: sql<number>`count(*)::int` })
+      .select({ c: countInt() })
       .from(campaignRecipients)
       .where(
         and(

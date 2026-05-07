@@ -3,7 +3,7 @@
  */
 
 import { db } from "@/db/client";
-import { deleteReturningCount, insertReturning } from "@/db/dialect";
+import { countFilterInt, countInt, deleteReturningCount, insertReturning } from "@/db/dialect";
 import { type Campaign, campaignRecipients, campaigns, emailEvents } from "@/db/schema";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { bodyToHtml } from "./compose";
@@ -147,14 +147,14 @@ export async function getCampaignStats(campaignId: string) {
   if (!db) return null;
   const [stats] = await db
     .select({
-      total: sql<number>`count(*)::int`,
-      sent: sql<number>`count(*) filter (where ${campaignRecipients.status} = 'sent')::int`,
-      pending: sql<number>`count(*) filter (where ${campaignRecipients.status} = 'pending')::int`,
-      sending: sql<number>`count(*) filter (where ${campaignRecipients.status} = 'sending')::int`,
-      bounced: sql<number>`count(*) filter (where ${campaignRecipients.status} = 'bounced')::int`,
-      failed: sql<number>`count(*) filter (where ${campaignRecipients.status} = 'failed')::int`,
-      opened: sql<number>`count(*) filter (where ${campaignRecipients.openedAt} is not null)::int`,
-      clicked: sql<number>`count(*) filter (where ${campaignRecipients.clickedAt} is not null)::int`,
+      total: countInt(),
+      sent: countFilterInt(sql`${campaignRecipients.status} = 'sent'`),
+      pending: countFilterInt(sql`${campaignRecipients.status} = 'pending'`),
+      sending: countFilterInt(sql`${campaignRecipients.status} = 'sending'`),
+      bounced: countFilterInt(sql`${campaignRecipients.status} = 'bounced'`),
+      failed: countFilterInt(sql`${campaignRecipients.status} = 'failed'`),
+      opened: countFilterInt(sql`${campaignRecipients.openedAt} IS NOT NULL`),
+      clicked: countFilterInt(sql`${campaignRecipients.clickedAt} IS NOT NULL`),
     })
     .from(campaignRecipients)
     .where(eq(campaignRecipients.campaignId, campaignId));

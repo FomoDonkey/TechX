@@ -1,3 +1,4 @@
+import { LogoLockup } from "@/components/brand/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -35,12 +36,9 @@ export function AuthShell({
       <header className="flex items-center justify-between p-6">
         <Link
           href="/"
-          className="group inline-flex items-center gap-2 text-sm font-medium tracking-tight"
+          className="group inline-flex items-center gap-2 text-sm font-medium tracking-tight transition-transform hover:scale-[1.02]"
         >
-          <span className="grid size-8 place-items-center rounded-xl bg-[linear-gradient(120deg,var(--brand-1),var(--brand-2))] text-white shadow-md transition-transform group-hover:scale-105">
-            ✦
-          </span>
-          <span className="font-display text-lg font-semibold">CSM</span>
+          <LogoLockup size="md" />
         </Link>
         <ThemeToggle />
       </header>

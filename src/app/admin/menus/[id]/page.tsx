@@ -11,7 +11,7 @@ import { notFound } from "next/navigation";
 import { MenuBuilder } from "./builder";
 
 export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Editar menú · CSM" };
+export const metadata: Metadata = { title: "Editar menú · techx" };
 
 export default async function EditMenuPage(props: { params: Promise<{ id: string }> }) {
   const { id } = await props.params;

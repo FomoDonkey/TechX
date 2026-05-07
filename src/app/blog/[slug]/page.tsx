@@ -10,7 +10,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-export const revalidate = 60;
+// F11a: multi-tenant por Host. Ver nota en src/app/blog/page.tsx.
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({
   params,

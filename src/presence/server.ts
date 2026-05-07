@@ -12,7 +12,7 @@
  */
 
 import { db } from "@/db/client";
-import { deleteReturningCount } from "@/db/dialect";
+import { deleteReturningCount, upsert } from "@/db/dialect";
 import { presenceSessions } from "@/db/schema";
 import { publishPubsub } from "@/lib/pubsub";
 import { and, eq, gte, sql } from "drizzle-orm";
@@ -63,24 +63,22 @@ export async function upsertHeartbeat(input: {
 }): Promise<void> {
   if (!db) return;
   const entryId = entryIdFromRoute(input.route);
-  await db
-    .insert(presenceSessions)
-    .values({
+  await upsert(presenceSessions, {
+    values: {
       workspaceId: input.workspaceId,
       userId: input.userId,
       clientId: input.clientId,
       route: input.route,
       entryId,
-    })
-    .onConflictDoUpdate({
-      target: [presenceSessions.workspaceId, presenceSessions.clientId],
-      set: {
-        userId: input.userId,
-        route: input.route,
-        entryId,
-        lastSeenAt: new Date(),
-      },
-    });
+    },
+    target: [presenceSessions.workspaceId, presenceSessions.clientId],
+    set: {
+      userId: input.userId,
+      route: input.route,
+      entryId,
+      lastSeenAt: new Date(),
+    },
+  });
 
   await publishPubsub(PRESENCE_CHANNEL(input.workspaceId), {
     kind: "update",

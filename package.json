@@ -18,6 +18,9 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx --env-file=.env src/db/seed.ts",
     "db:check-parity": "tsx scripts/check-schema-parity.ts",
+    "f1:setup": "node scripts/f1-setup.mjs",
+    "f1:sync": "node scripts/sync-f1-data.mjs",
+    "gen:secret": "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
     "csm": "node bin/csm.mjs",
     "mcp": "node bin/csm-mcp.mjs"
   },

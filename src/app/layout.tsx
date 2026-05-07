@@ -10,37 +10,37 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(env.NEXT_PUBLIC_APP_URL),
   title: {
-    default: "CSM — Content Spectacular Machine",
-    template: "%s · CSM",
+    default: "techx — el CMS espectacular",
+    template: "%s · techx",
   },
   description:
-    "El CMS moderno que reemplaza WordPress. Editor estilo Notion, diseño estilo Framer, IA nativa, multi-tenant. Open source y gratis para empezar.",
-  applicationName: "CSM",
-  authors: [{ name: "CSM" }],
-  generator: "CSM",
+    "Plataforma de contenido moderna, AI-native y headless-first. Edición colaborativa en tiempo real, búsqueda semántica, automaticación editorial. Open source.",
+  applicationName: "techx",
+  authors: [{ name: "techx" }],
+  generator: "techx",
   keywords: [
     "CMS",
     "headless CMS",
-    "WordPress alternative",
-    "Notion editor",
     "AI CMS",
     "open source CMS",
+    "edición colaborativa",
     "Next.js CMS",
+    "techx",
   ],
   openGraph: {
     type: "website",
     locale: "es_ES",
     url: env.NEXT_PUBLIC_APP_URL,
-    siteName: "CSM",
-    title: "CSM — Content Spectacular Machine",
+    siteName: "techx",
+    title: "techx — el CMS espectacular",
     description:
-      "Publica como en Notion. Diseña como en Framer. Escala como Vercel. Mide como Linear.",
+      "Edita en colaboración real. Diseña visualmente. Publica con IA. Despliega en segundos.",
   },
   twitter: {
     card: "summary_large_image",
-    title: "CSM — Content Spectacular Machine",
+    title: "techx — el CMS espectacular",
     description:
-      "Publica como en Notion. Diseña como en Framer. Escala como Vercel. Mide como Linear.",
+      "Edita en colaboración real. Diseña visualmente. Publica con IA. Despliega en segundos.",
   },
   alternates: {
     canonical: "/",
@@ -56,7 +56,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0c0a14" },
+    { media: "(prefers-color-scheme: dark)", color: "#150a0a" },
   ],
   width: "device-width",
   initialScale: 1,

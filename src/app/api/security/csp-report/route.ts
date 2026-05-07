@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { upsert } from "@/db/dialect";
 import { cspReports } from "@/db/schema";
 import { sql } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
@@ -140,9 +141,8 @@ async function upsertReport(r: ParsedReport, ua: string | null): Promise<void> {
   const key = await dedupKey(r);
   const uaHash = ua ? await sha256(`csp:ua:${ua}`) : null;
   try {
-    await db
-      .insert(cspReports)
-      .values({
+    await upsert(cspReports, {
+      values: {
         dedupKey: key,
         blockedUri: r.blockedUri,
         violatedDirective: r.violatedDirective,
@@ -154,15 +154,16 @@ async function upsertReport(r: ParsedReport, ua: string | null): Promise<void> {
         sample: r.sample,
         userAgentHash: uaHash,
         disposition: r.disposition,
-      })
-      .onConflictDoUpdate({
-        target: cspReports.dedupKey,
-        set: {
-          occurrences: sql`${cspReports.occurrences} + 1`,
-          lastSeenAt: sql`NOW()`,
-          resolvedAt: sql`NULL`,
-        },
-      });
+      },
+      target: cspReports.dedupKey,
+      // SQL fragments funcionan en ambos: `col + 1` y `NOW()` son válidos en
+      // Postgres y MySQL. `NULL` también es ANSI estándar.
+      set: {
+        occurrences: sql`${cspReports.occurrences} + 1`,
+        lastSeenAt: sql`NOW()`,
+        resolvedAt: sql`NULL`,
+      },
+    });
   } catch (err) {
     if (process.env.NODE_ENV !== "production") console.warn("[CSP] upsert failed", err);
   }

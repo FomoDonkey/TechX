@@ -29,7 +29,7 @@ export async function generateMetadata({
   const { collection } = await params;
   const ctx = await requireWorkspace("editor");
   const c = await getCollectionBySlug(ctx.workspace.id, collection);
-  return { title: c ? `${c.name} · Contenido · CSM` : "Colección · CSM" };
+  return { title: c ? `${c.name} · Contenido · techx` : "Colección · techx" };
 }
 
 export default async function CollectionContentPage({

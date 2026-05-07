@@ -1,6 +1,6 @@
 import { type BlockNode, EMPTY_LAYOUT, normalizeLayout } from "@/blocks/types";
 import { db } from "@/db/client";
-import { insertReturning } from "@/db/dialect";
+import { countInt, insertReturning } from "@/db/dialect";
 import { type Page, pages } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { isReservedSlug, slugify } from "@/lib/slug";
@@ -103,9 +103,9 @@ export async function listPages(
       .orderBy(desc(pages.updatedAt))
       .limit(limit)
       .offset(offset),
-    db.select({ n: sql<number>`count(*)::int` }).from(pages).where(finalWhere),
+    db.select({ n: countInt() }).from(pages).where(finalWhere),
     db
-      .select({ status: pages.status, n: sql<number>`count(*)::int` })
+      .select({ status: pages.status, n: countInt() })
       .from(pages)
       .where(baseWhere)
       .groupBy(pages.status),

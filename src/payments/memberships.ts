@@ -10,7 +10,7 @@
  */
 
 import { db } from "@/db/client";
-import { deleteReturningCount, insertReturning, upsertReturning } from "@/db/dialect";
+import { countInt, deleteReturningCount, insertReturning, upsertReturning } from "@/db/dialect";
 import { type Membership, type Tier, memberEvents, memberships, tiers } from "@/db/schema";
 import { slugify, withSuffix } from "@/lib/slug";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -201,7 +201,7 @@ export async function countActiveMembersByTier(workspaceId: string): Promise<Map
   const rows = await db
     .select({
       tierId: memberships.tierId,
-      count: sql<number>`count(*)::int`,
+      count: countInt(),
     })
     .from(memberships)
     .where(
@@ -229,7 +229,7 @@ export async function membershipKpis(workspaceId: string): Promise<{
   const rows = await db
     .select({
       status: memberships.status,
-      count: sql<number>`count(*)::int`,
+      count: countInt(),
     })
     .from(memberships)
     .where(eq(memberships.workspaceId, workspaceId))
@@ -265,7 +265,7 @@ export async function listMemberships(
       .orderBy(desc(memberships.createdAt))
       .limit(limit)
       .offset(offset),
-    db.select({ count: sql<number>`count(*)::int` }).from(memberships).where(where),
+    db.select({ count: countInt() }).from(memberships).where(where),
   ]);
   return { rows, total: totalResult[0]?.count ?? 0 };
 }

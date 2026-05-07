@@ -28,6 +28,7 @@ const safeUrlSchema = z
     (v) => {
       if (typeof v !== "string") return false;
       if (v === "") return true;
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: filtro intencional anti CR/LF/null injection en URLs
       if (/[\x00-\x1f\x7f<>"]/.test(v)) return false;
       if (v.startsWith("#")) return true;
       if (/^https?:\/\/[^\s<>"]+$/i.test(v)) return true;
@@ -2757,6 +2758,678 @@ const SUBSTACK_FOOTER: BlockSpec = {
 };
 
 // ============================================================
+// Plantilla 9 — F1 Grand Prix (`f1-grand-prix`)
+// ============================================================
+
+const F1_HERO: BlockSpec = {
+  kind: "tpl-f1-hero",
+  label: "F1 · Hero countdown",
+  icon: "Sparkles",
+  group: "Plantillas",
+  description:
+    "Hero F1 inmersivo: black + red neon, scanlines, velocity lines, marquee de países y countdown live al próximo GP.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    pretitle: "TEMPORADA 2025 · OFICIAL",
+    title: "FORMULA 1",
+    subtitle: "10 equipos. 20 pilotos. 24 Grandes Premios. Una sola pasión a 350 km/h.",
+    nextRaceISO: "",
+    nextRaceLabel: "PRÓXIMO GP · MONACO",
+    countries: [
+      "🇦🇺 AUSTRALIA",
+      "🇨🇳 CHINA",
+      "🇯🇵 JAPÓN",
+      "🇧🇭 BAHRÉIN",
+      "🇸🇦 ARABIA",
+      "🇺🇸 MIAMI",
+      "🇮🇹 IMOLA",
+      "🇲🇨 MÓNACO",
+      "🇪🇸 ESPAÑA",
+      "🇨🇦 CANADÁ",
+      "🇬🇧 SILVERSTONE",
+    ],
+  },
+  propsSpec: [
+    { key: "pretitle", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+    {
+      key: "nextRaceISO",
+      label: "Fecha próximo GP (ISO)",
+      kind: "text",
+      group: "Contenido",
+      description: "Formato: 2025-05-25T14:00:00Z. Vacío = +30 días desde ahora.",
+    },
+    { key: "nextRaceLabel", label: "Etiqueta countdown", kind: "text", group: "Contenido" },
+    {
+      key: "countries",
+      label: "Países (marquee)",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [{ key: "label", label: "Texto", kind: "text" }],
+      itemDefault: { label: "🏁 GP" },
+    },
+  ],
+  propsSchema: z
+    .object({
+      pretitle: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(280).default(""),
+      nextRaceISO: z.string().max(40).default(""),
+      nextRaceLabel: z.string().max(120).default(""),
+      // Acepta strings (legacy / defaults) o objetos {label} desde inspector.
+      countries: z
+        .array(z.union([z.string().max(60), z.object({ label: z.string().max(60) })]))
+        .default([]),
+    })
+    .partial(),
+};
+
+const driverItemZ = z.object({
+  name: z.string().max(80).default(""),
+  abbrev: z.string().max(5).default(""),
+  number: z.number().int().min(0).max(999).default(0),
+  team: z.string().max(60).default(""),
+  country: z.string().max(60).default(""),
+  countryFlag: z.string().max(10).default(""),
+  points: z.number().min(0).default(0),
+  podiums: z.number().int().min(0).default(0),
+  championships: z.number().int().min(0).default(0),
+  color: z.string().max(20).default("#DC0000"),
+});
+
+const F1_DRIVERS: BlockSpec = {
+  kind: "tpl-f1-drivers",
+  label: "F1 · Pilotos grid 3D",
+  icon: "Users",
+  group: "Plantillas",
+  description:
+    "Grid de cards 3D con tilt al hover, número dorsal de fondo y colores del equipo. Stats: puntos · podios · títulos.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "PARRILLA · TEMPORADA 2025",
+    title: "Pilotos titulares",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    {
+      key: "drivers",
+      label: "Pilotos",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "name", label: "Nombre", kind: "text" },
+        { key: "abbrev", label: "Abreviatura (3)", kind: "text" },
+        { key: "number", label: "Nº", kind: "number" },
+        { key: "team", label: "Equipo", kind: "text" },
+        { key: "country", label: "País", kind: "text" },
+        { key: "countryFlag", label: "Bandera (emoji)", kind: "text" },
+        { key: "points", label: "Puntos", kind: "number" },
+        { key: "podiums", label: "Podios", kind: "number" },
+        { key: "championships", label: "Títulos", kind: "number" },
+        { key: "color", label: "Color equipo (hex)", kind: "text" },
+      ],
+      itemDefault: {
+        name: "Piloto",
+        abbrev: "ABC",
+        number: 0,
+        team: "Equipo",
+        country: "País",
+        countryFlag: "🏁",
+        points: 0,
+        podiums: 0,
+        championships: 0,
+        color: "#DC0000",
+      },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      drivers: z.array(driverItemZ).default([]),
+    })
+    .partial(),
+};
+
+const teamItemZ = z.object({
+  name: z.string().max(60).default(""),
+  fullName: z.string().max(120).default(""),
+  base: z.string().max(120).default(""),
+  championships: z.number().int().min(0).default(0),
+  points: z.number().min(0).default(0),
+  color: z.string().max(20).default("#FFFFFF"),
+});
+
+const F1_CONSTRUCTORS: BlockSpec = {
+  kind: "tpl-f1-constructors",
+  label: "F1 · Constructores marquee",
+  icon: "Film",
+  group: "Plantillas",
+  description: "Doble marquee scroll-driven con escuderías y stats de puntos.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "ESCUDERÍAS",
+    title: "Los 10 equipos",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    {
+      key: "teams",
+      label: "Equipos",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "name", label: "Nombre corto", kind: "text" },
+        { key: "fullName", label: "Nombre completo", kind: "text" },
+        { key: "base", label: "Base", kind: "text" },
+        { key: "championships", label: "Títulos", kind: "number" },
+        { key: "points", label: "Puntos totales", kind: "number" },
+        { key: "color", label: "Color (hex)", kind: "text" },
+      ],
+      itemDefault: {
+        name: "Equipo",
+        fullName: "Equipo F1 Team",
+        base: "Ciudad, País",
+        championships: 0,
+        points: 0,
+        color: "#FFFFFF",
+      },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      teams: z.array(teamItemZ).default([]),
+    })
+    .partial(),
+};
+
+const raceItemZ = z.object({
+  round: z.number().int().min(0).max(99).default(1),
+  date: z.string().max(40).default(""),
+  gpName: z.string().max(120).default(""),
+  country: z.string().max(60).default(""),
+  countryFlag: z.string().max(10).default(""),
+  city: z.string().max(60).default(""),
+  circuit: z.string().max(120).default(""),
+  laps: z.number().int().min(0).max(200).default(0),
+  lengthKm: z.number().min(0).default(0),
+  lapRecord: z.string().max(20).default(""),
+  recordHolder: z.string().max(80).default(""),
+});
+
+const F1_CALENDAR: BlockSpec = {
+  kind: "tpl-f1-calendar",
+  label: "F1 · Calendario sticky stack",
+  icon: "Calendar",
+  group: "Plantillas",
+  description: "Cards sticky con info de cada GP, vueltas, longitud circuito y récord.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "CALENDARIO",
+    title: "Grandes Premios destacados",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    {
+      key: "races",
+      label: "Carreras",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "round", label: "Ronda", kind: "number" },
+        { key: "date", label: "Fecha (texto)", kind: "text" },
+        { key: "gpName", label: "Nombre GP", kind: "text" },
+        { key: "country", label: "País", kind: "text" },
+        { key: "countryFlag", label: "Bandera (emoji)", kind: "text" },
+        { key: "city", label: "Ciudad", kind: "text" },
+        { key: "circuit", label: "Circuito", kind: "text" },
+        { key: "laps", label: "Vueltas", kind: "number" },
+        { key: "lengthKm", label: "Km/vuelta", kind: "number" },
+        { key: "lapRecord", label: "Récord (1:23.456)", kind: "text" },
+        { key: "recordHolder", label: "Récord por", kind: "text" },
+      ],
+      itemDefault: {
+        round: 1,
+        date: "01 ENE 2025",
+        gpName: "Grand Prix",
+        country: "País",
+        countryFlag: "🏁",
+        city: "Ciudad",
+        circuit: "Circuit",
+        laps: 50,
+        lengthKm: 5,
+        lapRecord: "1:30.000",
+        recordHolder: "Piloto",
+      },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      races: z.array(raceItemZ).default([]),
+    })
+    .partial(),
+};
+
+const F1_STATS: BlockSpec = {
+  kind: "tpl-f1-stats",
+  label: "F1 · Stats counters",
+  icon: "BarChart3",
+  group: "Plantillas",
+  description: "4 counters animados al entrar en viewport (equipos, pilotos, GPs, distancia).",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "TEMPORADA EN CIFRAS",
+    stats: [
+      { value: 10, suffix: "", label: "EQUIPOS" },
+      { value: 20, suffix: "", label: "PILOTOS" },
+      { value: 24, suffix: "", label: "GRANDES PREMIOS" },
+      { value: 6125, suffix: " KM", label: "DISTANCIA TOTAL" },
+    ],
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    {
+      key: "stats",
+      label: "Stats",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "value", label: "Valor (número)", kind: "number" },
+        { key: "suffix", label: "Sufijo", kind: "text" },
+        { key: "label", label: "Etiqueta", kind: "text" },
+      ],
+      itemDefault: { value: 0, suffix: "", label: "STAT" },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      stats: z
+        .array(
+          z.object({
+            value: z.number().min(0).default(0),
+            suffix: z.string().max(20).default(""),
+            label: z.string().max(60).default(""),
+          }),
+        )
+        .default([]),
+    })
+    .partial(),
+};
+
+const F1_STANDINGS: BlockSpec = {
+  kind: "tpl-f1-standings",
+  label: "F1 · Clasificación pilotos",
+  icon: "Trophy",
+  group: "Plantillas",
+  description:
+    "Tabla de clasificación de pilotos con barras de progreso animadas y trofeo en el líder.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "CLASIFICACIÓN PILOTOS",
+    title: "Drivers' Championship",
+    subtitle: "Puntuación acumulada en la temporada actual.",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+    {
+      key: "drivers",
+      label: "Pilotos (orden por puntos desc)",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "name", label: "Nombre", kind: "text" },
+        { key: "abbrev", label: "Abreviatura", kind: "text" },
+        { key: "number", label: "Nº", kind: "number" },
+        { key: "team", label: "Equipo", kind: "text" },
+        { key: "country", label: "País", kind: "text" },
+        { key: "countryFlag", label: "Bandera (emoji)", kind: "text" },
+        { key: "points", label: "Puntos", kind: "number" },
+        { key: "podiums", label: "Podios", kind: "number" },
+        { key: "championships", label: "Títulos", kind: "number" },
+        { key: "color", label: "Color equipo (hex)", kind: "text" },
+      ],
+      itemDefault: {
+        name: "Piloto",
+        abbrev: "ABC",
+        number: 0,
+        team: "Equipo",
+        country: "País",
+        countryFlag: "🏁",
+        points: 0,
+        podiums: 0,
+        championships: 0,
+        color: "#DC0000",
+      },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(280).default(""),
+      drivers: z.array(driverItemZ).default([]),
+    })
+    .partial(),
+};
+
+const F1_CONSTRUCTORS_TABLE: BlockSpec = {
+  kind: "tpl-f1-constructors-table",
+  label: "F1 · Tabla constructores",
+  icon: "BarChart3",
+  group: "Plantillas",
+  description: "Cards de equipos con barra de gap visualizada y víctorias.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "CLASIFICACIÓN CONSTRUCTORES",
+    title: "Constructors' Championship",
+    subtitle: "Puntuación combinada de los dos pilotos de cada equipo.",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+    {
+      key: "teams",
+      label: "Equipos",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "name", label: "Nombre", kind: "text" },
+        { key: "color", label: "Color (hex)", kind: "text" },
+        { key: "points", label: "Puntos", kind: "number" },
+        { key: "wins", label: "Victorias", kind: "number" },
+      ],
+      itemDefault: { name: "Equipo", color: "#FFFFFF", points: 0, wins: 0 },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(280).default(""),
+      teams: z
+        .array(
+          z.object({
+            name: z.string().max(60).default(""),
+            color: z.string().max(20).default("#FFFFFF"),
+            points: z.number().min(0).default(0),
+            wins: z.number().int().min(0).default(0),
+          }),
+        )
+        .default([]),
+    })
+    .partial(),
+};
+
+const F1_TRACKS: BlockSpec = {
+  kind: "tpl-f1-tracks",
+  label: "F1 · Circuitos legendarios",
+  icon: "MapPin",
+  group: "Plantillas",
+  description: "Galería de circuitos con datos: longitud, curvas, DRS zones, año primer GP.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "CIRCUITOS LEGENDARIOS",
+    title: "Trazados que han hecho historia",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    {
+      key: "tracks",
+      label: "Circuitos",
+      kind: "items",
+      group: "Contenido",
+      itemSpec: [
+        { key: "name", label: "Nombre", kind: "text" },
+        { key: "country", label: "País", kind: "text" },
+        { key: "countryFlag", label: "Bandera", kind: "text" },
+        { key: "city", label: "Ciudad", kind: "text" },
+        { key: "lengthKm", label: "Longitud (km)", kind: "number" },
+        { key: "turns", label: "Curvas", kind: "number" },
+        { key: "drsZones", label: "DRS zones", kind: "number" },
+        { key: "firstGP", label: "Primer GP (año)", kind: "number" },
+      ],
+      itemDefault: {
+        name: "Circuit",
+        country: "País",
+        countryFlag: "🏁",
+        city: "Ciudad",
+        lengthKm: 5,
+        turns: 14,
+        drsZones: 2,
+        firstGP: 2000,
+      },
+    },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      tracks: z
+        .array(
+          z.object({
+            name: z.string().max(80).default(""),
+            country: z.string().max(60).default(""),
+            countryFlag: z.string().max(10).default(""),
+            city: z.string().max(60).default(""),
+            lengthKm: z.number().min(0).default(0),
+            turns: z.number().int().min(0).default(0),
+            drsZones: z.number().int().min(0).default(0),
+            firstGP: z.number().int().min(1900).max(2100).default(2000),
+          }),
+        )
+        .default([]),
+    })
+    .partial(),
+};
+
+const F1_LAST_RACE: BlockSpec = {
+  kind: "tpl-f1-last-race",
+  label: "F1 · Podio última carrera",
+  icon: "Award",
+  group: "Plantillas",
+  description: "Podio espectacular de la última carrera con barras estilo trofeos y datos del GP.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "ÚLTIMA CARRERA",
+    title: "",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título (vacío = auto del track)", kind: "text", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+    })
+    .partial(),
+};
+
+const F1_DOTD: BlockSpec = {
+  kind: "tpl-f1-dotd",
+  label: "F1 · Driver of the Day",
+  icon: "Star",
+  group: "Plantillas",
+  description: "Top 10 votados Driver of the Day por los aficionados.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "DRIVER OF THE DAY",
+    title: "Los más votados por los aficionados",
+    subtitle: "Agregado oficial de votaciones de los fans tras cada carrera.",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(280).default(""),
+    })
+    .partial(),
+};
+
+const F1_SEASON_2026: BlockSpec = {
+  kind: "tpl-f1-2026",
+  label: "F1 · Temporada 2026",
+  icon: "Rocket",
+  group: "Plantillas",
+  description:
+    "Avance temporada 2026: clasificación parcial, parrilla confirmada y última carrera. Gradient violeta neon.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "TEMPORADA 2026 · NUEVA ERA",
+    title: "Reglamento 2026",
+    subtitle:
+      "Motores 100% sostenibles, monoplazas más ligeros, aerodinámica activa. Estos son los pilotos confirmados y los primeros resultados.",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(400).default(""),
+    })
+    .partial(),
+};
+
+const F1_SEASON_BANNER: BlockSpec = {
+  kind: "tpl-f1-season-banner",
+  label: "F1 · Banner separador temporada",
+  icon: "Flag",
+  group: "Plantillas",
+  description:
+    "Banner full-width con año gigante para separar visualmente las temporadas. Variantes: red (2025), violet (2026), neutral.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    year: "2025",
+    label: "TEMPORADA EN CURSO",
+    description: "Desde Melbourne hasta Abu Dhabi · 24 Grandes Premios · 10 escuderías",
+    variant: "red",
+  },
+  propsSpec: [
+    { key: "year", label: "Año (texto)", kind: "text", group: "Contenido" },
+    { key: "label", label: "Etiqueta", kind: "text", group: "Contenido" },
+    { key: "description", label: "Descripción", kind: "longtext", group: "Contenido" },
+    {
+      key: "variant",
+      label: "Variante color",
+      kind: "select",
+      group: "Estilo",
+      options: [
+        { value: "red", label: "Rojo (temporada actual)" },
+        { value: "violet", label: "Violeta (2026 / nueva era)" },
+        { value: "neutral", label: "Neutro (histórico)" },
+      ],
+    },
+  ],
+  propsSchema: z
+    .object({
+      year: z.string().max(20).default("2025"),
+      label: z.string().max(120).default(""),
+      description: z.string().max(280).default(""),
+      variant: z.enum(["red", "violet", "neutral"]).default("red"),
+    })
+    .partial(),
+};
+
+const F1_CHAMPIONS_SPEC: BlockSpec = {
+  kind: "tpl-f1-champions",
+  label: "F1 · Palmarés campeones",
+  icon: "Trophy",
+  group: "Plantillas",
+  description:
+    "Cards con campeones de pilotos y constructores de las últimas temporadas (2022-2024).",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "PALMARÉS RECIENTE",
+    title: "Campeones por temporada",
+    subtitle:
+      "Mundial de Pilotos y de Constructores en las últimas temporadas. Datos derivados de los resultados oficiales por carrera.",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(400).default(""),
+    })
+    .partial(),
+};
+
+const F1_CTA: BlockSpec = {
+  kind: "tpl-f1-cta",
+  label: "F1 · CTA dramático",
+  icon: "Send",
+  group: "Plantillas",
+  description: "CTA final con gradient pulsante, scanlines y suscripción email.",
+  canHaveChildren: false,
+  hiddenInPalette: true,
+  defaultProps: {
+    eyebrow: "VIVE LA F1 EN VIVO",
+    title: "No te pierdas ni una vuelta.",
+    subtitle: "Resultados, clasificaciones, análisis y momentos clave. Cada semana en tu inbox.",
+    ctaText: "Suscríbete",
+    ctaHref: "#",
+    emailPlaceholder: "tu@email.com",
+  },
+  propsSpec: [
+    { key: "eyebrow", label: "Eyebrow", kind: "text", group: "Contenido" },
+    { key: "title", label: "Título", kind: "text", group: "Contenido" },
+    { key: "subtitle", label: "Subtítulo", kind: "longtext", group: "Contenido" },
+    { key: "ctaText", label: "Texto botón", kind: "text", group: "Contenido" },
+    { key: "ctaHref", label: "URL botón", kind: "url", group: "Contenido" },
+    { key: "emailPlaceholder", label: "Placeholder email", kind: "text", group: "Contenido" },
+  ],
+  propsSchema: z
+    .object({
+      eyebrow: z.string().max(120).default(""),
+      title: z.string().max(120).default(""),
+      subtitle: z.string().max(280).default(""),
+      ctaText: z.string().max(40).default(""),
+      ctaHref: safeUrlSchema.default("#"),
+      emailPlaceholder: z.string().max(60).default(""),
+    })
+    .partial(),
+};
+
+// ============================================================
 // Export combinado — se concatena al BLOCK_SPECS principal en registry.ts
 // ============================================================
 export const SPECTACULAR_SPECS: BlockSpec[] = [
@@ -2810,4 +3483,19 @@ export const SPECTACULAR_SPECS: BlockSpec[] = [
   SUBSTACK_PRICING,
   SUBSTACK_ARCHIVE,
   SUBSTACK_FOOTER,
+  // F1 (f1-grand-prix)
+  F1_HERO,
+  F1_DRIVERS,
+  F1_CONSTRUCTORS,
+  F1_CALENDAR,
+  F1_STATS,
+  F1_STANDINGS,
+  F1_CONSTRUCTORS_TABLE,
+  F1_TRACKS,
+  F1_LAST_RACE,
+  F1_DOTD,
+  F1_SEASON_2026,
+  F1_SEASON_BANNER,
+  F1_CHAMPIONS_SPEC,
+  F1_CTA,
 ];

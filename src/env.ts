@@ -36,12 +36,28 @@ export const env = createEnv({
       .default("dev-storage-secret-change-me-please-please-please"),
     API_KEY_PEPPER: z.string().min(16).default("dev-api-key-pepper-change-me-please-please-please"),
     CRON_SECRET: z.string().min(16).default("dev-cron-secret-change-me-please-please-please"),
+    /**
+     * F11a — Dominio raíz para subdominios automáticos de cada workspace.
+     * Ejemplos:
+     *   - "techx.com"      → workspaces salen como `<slug>.techx.com`
+     *   - "localhost:3000" → dev: `<slug>.localhost:3000`
+     *   - vacío            → no hay subdominios; resolución solo por
+     *                        custom domain o path-based `/s/<slug>/...`
+     * Para Vercel free tier sin dominio propio, dejar vacío y usar paths.
+     */
+    ROOT_DOMAIN: z.string().optional(),
   },
   client: {
     NEXT_PUBLIC_APP_NAME: z.string().default("CSM"),
     NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: z.string().optional(),
     NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+    /**
+     * F11a — Mismo valor que server.ROOT_DOMAIN, expuesto al cliente para
+     * que la UI de `/admin/ajustes/dominio` pueda mostrar la URL preview
+     * en vivo (`<slug>.<root>`). En SSR siempre usamos el server-side.
+     */
+    NEXT_PUBLIC_ROOT_DOMAIN: z.string().optional(),
   },
   runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,
@@ -74,10 +90,12 @@ export const env = createEnv({
     STORAGE_SIGNING_SECRET: process.env.STORAGE_SIGNING_SECRET,
     API_KEY_PEPPER: process.env.API_KEY_PEPPER,
     CRON_SECRET: process.env.CRON_SECRET,
+    ROOT_DOMAIN: process.env.ROOT_DOMAIN,
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
     NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    NEXT_PUBLIC_ROOT_DOMAIN: process.env.NEXT_PUBLIC_ROOT_DOMAIN,
   },
   emptyStringAsUndefined: true,
   skipValidation: process.env.SKIP_ENV_VALIDATION === "true",

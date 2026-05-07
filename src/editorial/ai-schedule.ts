@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { countInt, extractDayOfWeek, extractHour } from "@/db/dialect";
 import { analyticsEvents, entries } from "@/db/schema";
 import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 
@@ -26,17 +27,17 @@ export async function suggestSlots(
   const since = new Date(Date.now() - 90 * 24 * 3600 * 1000);
 
   // Promedio de visitas por (dow, hour) en los últimos 90 días.
+  const dowCol = extractDayOfWeek(analyticsEvents.createdAt);
+  const hourCol = extractHour(analyticsEvents.createdAt);
   const stats = await db
     .select({
-      dow: sql<number>`extract(dow from ${analyticsEvents.createdAt})::int`,
-      hour: sql<number>`extract(hour from ${analyticsEvents.createdAt})::int`,
-      visits: sql<number>`count(*)::int`,
+      dow: dowCol,
+      hour: hourCol,
+      visits: countInt(),
     })
     .from(analyticsEvents)
     .where(and(eq(analyticsEvents.workspaceId, workspaceId), gte(analyticsEvents.createdAt, since)))
-    .groupBy(
-      sql`extract(dow from ${analyticsEvents.createdAt}), extract(hour from ${analyticsEvents.createdAt})`,
-    );
+    .groupBy(dowCol, hourCol);
 
   // También miramos publishedAt del workspace para filtrar slots con conflicto cercano.
   const upcomingWhere = options.collectionId

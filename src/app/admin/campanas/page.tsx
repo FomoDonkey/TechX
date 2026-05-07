@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateCampaignButton } from "./create-button";
 
-export const metadata: Metadata = { title: "Campañas · CSM" };
+export const metadata: Metadata = { title: "Campañas · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function CampaignsPage() {

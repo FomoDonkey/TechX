@@ -10,7 +10,8 @@
  * webhooks, menus, redirects. Auth + scopes vienen del context (api key).
  */
 
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
+import { iLike as ilike } from "@/db/dialect";
 import {
   apiKeys,
   automationRuns,
@@ -28,7 +29,6 @@ import {
   terms,
   webhooks,
 } from "@/db/schema";
-import { iLike as ilike } from "@/db/dialect";
 import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   GraphQLBoolean,
@@ -483,8 +483,18 @@ const QueryType = new GraphQLObjectType({
         if (args.locale) conds.push(eq(entries.locale, args.locale));
         const cur = decodeCursor(args.cursor);
         if (cur) {
+          // Cursor pagination cross-dialect. PG necesita `::text` para uuid y
+          // `::timestamp` para el literal date; MySQL no necesita casts.
+          //
+          // IMPORTANTE: pasamos el timestamp como ISO string (no Date) — los
+          // drivers (postgres-js, mysql2) fallan con `TypeError` cuando
+          // reciben Date dentro de `sql\`...\``. Postgres lo casta a timestamp
+          // vía `::timestamp`; MySQL acepta ISO string directo.
+          const cursorTs = new Date(cur.ts).toISOString();
           conds.push(
-            sql`(${entries.updatedAt}, ${entries.id}::text) < (${new Date(cur.ts)}::timestamp, ${cur.id})`,
+            dialect === "postgres"
+              ? sql`(${entries.updatedAt}, ${entries.id}::text) < (${cursorTs}::timestamp, ${cur.id})`
+              : sql`(${entries.updatedAt}, ${entries.id}) < (${cursorTs}, ${cur.id})`,
           );
         }
         const rows = await db

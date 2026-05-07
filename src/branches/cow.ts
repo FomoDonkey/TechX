@@ -1,4 +1,4 @@
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
 import { insertReturning } from "@/db/dialect";
 import {
   type Branch,
@@ -473,13 +473,16 @@ export async function listBranchConflicts(input: {
   // por si un futuro bug introdujera fork con originalEntryId cross-workspace.
   // Incluye también `branchState='deleted'` — borrar una entry en branch cuando
   // main fue editada después es también un conflicto a resolver.
+  // PG necesita `::text` para uuid → string; MySQL ya entrega varchar como string.
   const result = await db.execute<{
     fork_id: string;
     main_id: string;
     main_updated_at: Date;
     branched_from_updated_at: Date;
     state: string;
-  }>(sql`
+  }>(
+    dialect === "postgres"
+      ? sql`
     SELECT
       e.id::text AS fork_id,
       m.id::text AS main_id,
@@ -495,7 +498,25 @@ export async function listBranchConflicts(input: {
       AND e.branch_state IN ('forked', 'deleted')
       AND e.branched_from_updated_at IS NOT NULL
       AND m.updated_at > e.branched_from_updated_at
-  `);
+  `
+      : sql`
+    SELECT
+      e.id AS fork_id,
+      m.id AS main_id,
+      m.updated_at AS main_updated_at,
+      e.branched_from_updated_at AS branched_from_updated_at,
+      e.branch_state AS state
+    FROM entries e
+    INNER JOIN entries m
+      ON m.id = e.original_entry_id
+      AND m.workspace_id = e.workspace_id
+    WHERE e.workspace_id = ${input.workspaceId}
+      AND e.branch_id = ${input.branchId}
+      AND e.branch_state IN ('forked', 'deleted')
+      AND e.branched_from_updated_at IS NOT NULL
+      AND m.updated_at > e.branched_from_updated_at
+  `,
+  );
 
   return (
     result as unknown as Array<{

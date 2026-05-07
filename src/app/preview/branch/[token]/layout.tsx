@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
-  title: "Preview · CSM",
+  title: "Preview · techx",
   robots: { index: false, follow: false, nocache: true },
 };
 

@@ -9,7 +9,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { WebhookDetailClient } from "./client";
 
-export const metadata: Metadata = { title: "Webhook · CSM" };
+export const metadata: Metadata = { title: "Webhook · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function WebhookDetailPage({

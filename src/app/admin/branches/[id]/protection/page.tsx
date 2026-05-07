@@ -10,7 +10,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ProtectionForm } from "./client";
 
-export const metadata: Metadata = { title: "Protección · CSM" };
+export const metadata: Metadata = { title: "Protección · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function BranchProtectionPage({

@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { atomicClaim, insertReturning } from "@/db/dialect";
+import { atomicClaim, countInt, insertReturning } from "@/db/dialect";
 import {
   type EditorialAssignmentRole,
   type EntryAssignment,
@@ -316,7 +316,7 @@ export async function countActiveAssignmentsByUser(workspaceId: string) {
   const rows = await db
     .select({
       userId: entryAssignments.assigneeId,
-      count: sql<number>`count(*)::int`,
+      count: countInt(),
     })
     .from(entryAssignments)
     .where(and(eq(entryAssignments.workspaceId, workspaceId), isNull(entryAssignments.completedAt)))

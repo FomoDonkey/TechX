@@ -14,7 +14,7 @@ import { Crown, Sparkles, TrendingUp, Users, Zap } from "lucide-react";
 import type { Metadata } from "next";
 import { MembersTable, TiersBoard } from "./_client";
 
-export const metadata: Metadata = { title: "Membresías · CSM" };
+export const metadata: Metadata = { title: "Membresías · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function MembresiasPage() {

@@ -11,7 +11,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ResolveDirectiveButton, ResolveReportButton } from "./client";
 
-export const metadata: Metadata = { title: "Cabeceras de seguridad · CSM" };
+export const metadata: Metadata = { title: "Cabeceras de seguridad · techx" };
 export const dynamic = "force-dynamic";
 
 type DirectiveSummary = {

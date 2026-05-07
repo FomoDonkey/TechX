@@ -1,0 +1,52 @@
+# ============================================================
+# CSM — Override para BD EXTERNA (Postgres o MySQL fuera del compose)
+# ============================================================
+#
+# Usa este override cuando tu base de datos NO vive en este compose
+# (ej. Neon, RDS, MySQL en otro cloud como SDS, Aiven, PlanetScale, etc.).
+#
+# Lo que hace:
+#   1. Excluye el servicio `postgres` de docker-compose.yml mediante un
+#      profile inactivo (no se levanta, ni siquiera se construye).
+#   2. Sobrescribe `DATABASE_URL` del servicio `csm` para leerlo del .env
+#      en lugar de construirlo a partir de POSTGRES_*.
+#   3. Quita el `depends_on: postgres` (no hay BD local que esperar).
+#
+# Uso:
+#   1. En `.env`, define DATABASE_URL apuntando a tu BD externa:
+#        DATABASE_URL=mysql://csm:PASS@5.196.50.3:33060/csm_f1
+#      o:
+#        DATABASE_URL=postgres://USR:PASS@host.neon.tech/db?sslmode=require
+#   2. (Opcional MySQL 8.x) Si tu MySQL no es 9+, añade en .env:
+#        MYSQL_VECTOR_FALLBACK=true
+#      Esto degrada las columnas VECTOR a VARBINARY para que `db:push`
+#      no falle. La búsqueda semántica queda offload a Qdrant si lo
+#      configuras (REDIS_URL + Qdrant adapter).
+#   3. Levanta solo CSM:
+#        docker compose -f docker-compose.yml \
+#                       -f docker-compose.external-db.yml up -d csm
+#   4. Aplica el schema y siembra:
+#        docker compose exec csm npx drizzle-kit push --force
+#        docker compose exec csm npm run db:seed
+
+services:
+  # Excluye el servicio postgres del default `up` mediante profile inactivo.
+  # Si alguien hace `docker compose --profile disabled up`, sí se levantará,
+  # pero el caso normal (`up` sin profile) lo deja fuera.
+  postgres:
+    profiles:
+      - disabled
+
+  csm:
+    environment:
+      # `DATABASE_URL` se toma directamente del .env del host (override de
+      # la línea construida con POSTGRES_* del docker-compose.yml).
+      # `:?` exige que esté definido, fallando con mensaje claro.
+      DATABASE_URL: ${DATABASE_URL:?Define DATABASE_URL en .env (ej. mysql://csm:PASS@host:33060/csm_f1)}
+      # MySQL <9: degrada VECTOR a VARBINARY para que `db:push` no falle.
+      # En MySQL 9+ o Postgres deja vacío (default).
+      MYSQL_VECTOR_FALLBACK: ${MYSQL_VECTOR_FALLBACK:-}
+    # Reset de depends_on: ya no hay postgres local que esperar.
+    # docker-compose.yml define `depends_on: { postgres: { condition: ... } }`,
+    # esto lo limpia para que csm arranque sin esperar a nadie.
+    depends_on: !reset []

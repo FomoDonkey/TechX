@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { eq } from "drizzle-orm";
 import { db, schema } from "./client";
-import { insertReturning } from "./dialect";
+import { insertReturning, upsertNothing } from "./dialect";
 
 const DEMO_EMAIL = "demo@csm.dev";
 const DEMO_PASSWORD = "demo1234";
@@ -47,14 +47,15 @@ async function main() {
   if (!ws) throw new Error("No se pudo crear/leer el workspace demo");
 
   // 2) Colecciones builtin (idempotente por (ws, slug))
+  // upsertNothing = ON CONFLICT DO NOTHING (PG) / INSERT IGNORE (MySQL).
   for (const col of [
     { name: "Posts", slug: "posts", icon: "newspaper", description: "Entradas del blog" },
     { name: "Páginas", slug: "pages", icon: "file-text", description: "Páginas estáticas" },
   ]) {
-    await db
-      .insert(schema.collections)
-      .values({ workspaceId: ws.id, isBuiltin: true, ...col })
-      .onConflictDoNothing({ target: [schema.collections.workspaceId, schema.collections.slug] });
+    await upsertNothing(schema.collections, {
+      values: { workspaceId: ws.id, isBuiltin: true, ...col },
+      target: [schema.collections.workspaceId, schema.collections.slug],
+    });
   }
   console.log("  ✓ Colecciones builtin (posts, pages)");
 

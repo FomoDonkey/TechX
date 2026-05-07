@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
-import { insertReturning } from "@/db/dialect";
+import { countInt, insertReturning, upsertNothing } from "@/db/dialect";
 import { type Entry, collections, entries, revisions, workspaces } from "@/db/schema";
+import { resolvePublicWorkspaceFromRequest } from "@/domain/resolver";
 import { logActivity } from "@/lib/activity";
 import { slugify, withSuffix } from "@/lib/slug";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -43,19 +44,19 @@ export async function getOrCreateBuiltinCollection(workspaceId: string, slug: st
 
   const name = slug === POSTS_SLUG ? "Posts" : slug === PAGES_SLUG ? "Páginas" : slug;
   const icon = slug === POSTS_SLUG ? "newspaper" : "file-text";
-  // onConflictDoNothing + re-select para resolver carrera entre dos requests simultáneos
+  // upsertNothing + re-select para resolver carrera entre dos requests simultáneos
   // que detecten "no existe" antes de que ninguno haya insertado.
-  await db
-    .insert(collections)
-    .values({
+  await upsertNothing(collections, {
+    values: {
       workspaceId,
       name,
       slug,
       icon,
       isBuiltin: true,
       description: slug === POSTS_SLUG ? "Entradas del blog" : "Páginas estáticas",
-    })
-    .onConflictDoNothing({ target: [collections.workspaceId, collections.slug] });
+    },
+    target: [collections.workspaceId, collections.slug],
+  });
 
   const [final] = await db
     .select()
@@ -262,11 +263,11 @@ export async function listEntries(filter: EntryListFilter): Promise<{
       .orderBy(desc(entries.updatedAt))
       .limit(limit)
       .offset(offset),
-    db.select({ n: sql<number>`count(*)::int` }).from(entries).where(finalWhere),
+    db.select({ n: countInt() }).from(entries).where(finalWhere),
     db
       .select({
         status: entries.status,
-        n: sql<number>`count(*)::int`,
+        n: countInt(),
       })
       .from(entries)
       .where(and(...baseWhere))
@@ -365,15 +366,28 @@ export async function listPublishedPostsForWorkspace(
 }
 
 /**
- * Workspace por defecto para el blog público. Devuelve el más antiguo del sistema.
- * **No usa cookies** intencionalmente: el blog público debe ser cacheable con ISR
- * y dar la misma respuesta a todos los visitantes. La elección por subdominio o
- * dominio personalizado llegará en Fase 5 con el theme registry.
+ * Workspace público para la petición actual.
+ *
+ * F11a — multi-tenant. Resuelve por (en orden):
+ *   1. custom domain verificado (`Host` header)
+ *   2. subdomain del `ROOT_DOMAIN`
+ *   3. path-based `/s/<slug>/...` (cabecera `x-csm-path-slug` la inyecta el
+ *      middleware)
+ *   4. single-tenant fallback (1 solo workspace en la instancia)
+ *
+ * Si el slug usado pertenece al historial de slugs (rename < 30d), la
+ * función devuelve el workspace actual; las páginas públicas que quieran
+ * 301 al canónico deben usar `resolvePublicWorkspaceFromRequest()`
+ * directamente y leer `redirectCanonical`.
+ *
+ * Devuelve `null` si no hay match → la página debe `notFound()`.
+ *
+ * Nota: el viejo comportamiento "más antiguo del sistema" sigue como
+ * fallback de single-tenant.
  */
 export async function getDefaultPublicWorkspace(): Promise<typeof workspaces.$inferSelect | null> {
-  if (!db) return null;
-  const [first] = await db.select().from(workspaces).orderBy(workspaces.createdAt).limit(1);
-  return first ?? null;
+  const resolved = await resolvePublicWorkspaceFromRequest();
+  return resolved?.workspace ?? null;
 }
 
 export async function listLatestRevisions(entryId: string, limit = 20) {

@@ -246,7 +246,14 @@ export async function confirmSubmission(token: string): Promise<ConfirmResult> {
   if (!sub) return { ok: false, reason: "not_found" };
   if (sub.confirmedAt) return { ok: true, alreadyConfirmed: true };
 
-  const [form] = await db.select().from(forms).where(eq(forms.id, sub.formId)).limit(1);
+  // Defensa en profundidad: verifica que el form pertenece al mismo workspace
+  // que el submission. Si la submission fue manipulada con un formId de otro
+  // workspace, esto la rechaza.
+  const [form] = await db
+    .select()
+    .from(forms)
+    .where(and(eq(forms.id, sub.formId), eq(forms.workspaceId, sub.workspaceId)))
+    .limit(1);
   if (!form) return { ok: false, reason: "not_found" };
 
   await db

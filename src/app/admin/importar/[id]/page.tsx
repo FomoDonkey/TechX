@@ -10,7 +10,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Wizard } from "./wizard";
 
-export const metadata: Metadata = { title: "Wizard de import · CSM" };
+export const metadata: Metadata = { title: "Wizard de import · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function ImportDetail(props: { params: Promise<{ id: string }> }) {

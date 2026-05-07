@@ -13,7 +13,7 @@ import { Hero } from "@/components/marketing/hero";
 import { MarketingNav } from "@/components/marketing/nav";
 import { Roadmap } from "@/components/marketing/roadmap";
 import { Stack } from "@/components/marketing/stack";
-import { WhyCSM } from "@/components/marketing/why";
+import { WhyCSM as WhyTechx } from "@/components/marketing/why";
 import { LiveEditOverlay } from "@/components/public/live-edit/overlay";
 import { getLiveEditState } from "@/components/public/live-edit/server";
 import { PublicNav } from "@/components/public/public-nav";
@@ -123,7 +123,7 @@ export default async function HomePage({
       <MarketingNav />
       <Hero />
       <Features />
-      <WhyCSM />
+      <WhyTechx />
       <Stack />
       <Roadmap />
       <CTA />

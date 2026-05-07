@@ -5,6 +5,7 @@
  */
 
 import { db } from "@/db/client";
+import { upsert } from "@/db/dialect";
 import { settings } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { moderationSystem } from "./prompts";
@@ -234,15 +235,13 @@ export async function setModerationThresholds(
   ) {
     throw new Error("Umbrales inválidos: 0 ≤ pending < spam ≤ 100");
   }
-  await db
-    .insert(settings)
-    .values({
+  await upsert(settings, {
+    values: {
       workspaceId,
       key: MODERATION_SETTINGS_KEY,
       value: thresholds,
-    })
-    .onConflictDoUpdate({
-      target: [settings.workspaceId, settings.key],
-      set: { value: thresholds },
-    });
+    },
+    target: [settings.workspaceId, settings.key],
+    set: { value: thresholds },
+  });
 }

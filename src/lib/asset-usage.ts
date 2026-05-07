@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
+import { iLikeJson } from "@/db/dialect";
 import { entries } from "@/db/schema";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 export type AssetUsage = {
   entryId: string;
@@ -35,7 +36,7 @@ export async function findAssetUsages(
         // F9b: el guard de "asset en uso" mira sólo entries de main — borrar un asset
         // mientras una branch lo usa es decisión consciente del autor de la branch.
         isNull(entries.branchId),
-        sql`${entries.body}::text ILIKE ${needle}`,
+        iLikeJson(entries.body, needle),
       ),
     )
     .limit(limit);

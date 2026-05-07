@@ -45,16 +45,43 @@ export function anonymizeIp(raw: string | null | undefined): string | null {
     return anonymizeIp(v4);
   }
 
-  // IPv6: trunca a /48 (3 hextets + ::)
+  // IPv6: trunca a /48 (3 hextets + ::). Necesita expandir la compresión `::`
+  // antes de tomar los primeros 3 hextets — si no, `2001:db8::1` daría
+  // `2001:db8:1::` (incorrecto: "1" es el último hextet, no el tercero).
   if (ip.includes(":")) {
-    // Normaliza: separa por ':' y toma los primeros 3 hextets no vacíos.
-    const hextets = ip.toLowerCase().split(":").filter(Boolean);
-    if (hextets.length === 0) return null;
-    const head = hextets.slice(0, 3);
-    return `${head.join(":")}::`;
+    const expanded = expandIpv6(ip.toLowerCase());
+    if (!expanded) return null;
+    return `${expanded.slice(0, 3).join(":")}::`;
   }
 
   return null;
+}
+
+/**
+ * Expande una IPv6 con `::` a sus 8 hextets explícitos.
+ * Devuelve null si el formato es inválido.
+ *
+ * Ejemplos:
+ *   `2001:db8::1`         → `["2001","db8","0","0","0","0","0","1"]`
+ *   `::1`                 → `["0","0","0","0","0","0","0","1"]`
+ *   `2001:db8:abcd:1234::1` → `["2001","db8","abcd","1234","0","0","0","1"]`
+ *   `2001:db8:1:2:3:4:5:6` → `["2001","db8","1","2","3","4","5","6"]`
+ */
+function expandIpv6(ip: string): string[] | null {
+  // Como mucho una `::` puede aparecer.
+  const doubleIdx = ip.indexOf("::");
+  if (doubleIdx === -1) {
+    // Sin compresión: deben venir 8 hextets exactos.
+    const hextets = ip.split(":");
+    if (hextets.length !== 8) return null;
+    return hextets.map((h) => h || "0");
+  }
+  if (ip.indexOf("::", doubleIdx + 2) !== -1) return null; // dos `::` = inválido
+  const left = ip.slice(0, doubleIdx).split(":").filter(Boolean);
+  const right = ip.slice(doubleIdx + 2).split(":").filter(Boolean);
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  return [...left, ...new Array(missing).fill("0"), ...right];
 }
 
 /**

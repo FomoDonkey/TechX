@@ -19,7 +19,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Seguridad · CSM" };
+export const metadata: Metadata = { title: "Seguridad · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function SeguridadPage() {

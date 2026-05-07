@@ -43,3 +43,13 @@ events.jsonl
 
 # storage local driver
 .csm-uploads/
+
+# claude local locks
+.claude/scheduled_tasks.lock
+
+# personal docs / loose assets at repo root
+/2.png
+/Logo techx-Photoroom.png
+/Tabla_Direccionamiento_F1_v3.pdf
+/ICA0_PRJ1IA01_Projecte_S1SX_2526.docx
+

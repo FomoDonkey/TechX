@@ -19,7 +19,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CompleteWithWinner } from "./_client";
 
-export const metadata: Metadata = { title: "Resultados A/B · CSM" };
+export const metadata: Metadata = { title: "Resultados A/B · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function AbTestDetailPage({

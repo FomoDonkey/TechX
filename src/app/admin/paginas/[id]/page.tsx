@@ -17,10 +17,10 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  if (!isUuid(id)) return { title: "Editor de página · CSM" };
+  if (!isUuid(id)) return { title: "Editor de página · techx" };
   const ctx = await requireWorkspace("editor");
   const p = await getPageById(ctx.workspace.id, id);
-  return { title: p ? `${p.title} · Builder · CSM` : "Editor de página · CSM" };
+  return { title: p ? `${p.title} · Builder · techx` : "Editor de página · techx" };
 }
 
 export default async function PageEditorPage({

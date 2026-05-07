@@ -4,7 +4,7 @@ import { ArrowRightLeft } from "lucide-react";
 import type { Metadata } from "next";
 import { RedirectsClient } from "./client";
 
-export const metadata: Metadata = { title: "Redirecciones · CSM" };
+export const metadata: Metadata = { title: "Redirecciones · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function RedirectsPage() {

@@ -6,7 +6,7 @@ import { Filter, Plus } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = { title: "Segmentos · CSM" };
+export const metadata: Metadata = { title: "Segmentos · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function SegmentsPage() {

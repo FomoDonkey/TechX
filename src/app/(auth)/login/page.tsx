@@ -10,7 +10,7 @@ export default function LoginPage() {
     <AuthShell
       title={
         <>
-          Bienvenida de vuelta a <span className="gradient-text">CSM</span>
+          Bienvenida de vuelta a <span className="gradient-text">techx</span>
         </>
       }
       subtitle="Entra para escribir, diseñar y publicar."

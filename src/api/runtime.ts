@@ -17,6 +17,7 @@ import { extractKeyFromRequest, hasScope, hashIp, recordAudit, verifyKey } from 
 import { registerRoute } from "@/api/openapi";
 import { consume } from "@/api/rate-limit";
 import { db } from "@/db/client";
+import { upsertNothing } from "@/db/dialect";
 import { idempotencyKeys } from "@/db/schema";
 import { and, eq, gt } from "drizzle-orm";
 import type { z } from "zod";
@@ -504,9 +505,8 @@ async function persistIdempotency(
 ) {
   if (!db) return;
   try {
-    await db
-      .insert(idempotencyKeys)
-      .values({
+    await upsertNothing(idempotencyKeys, {
+      values: {
         apiKeyId,
         key,
         method,
@@ -515,8 +515,8 @@ async function persistIdempotency(
         statusCode,
         response: response as object,
         expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
-      })
-      .onConflictDoNothing();
+      },
+    });
   } catch {
     // best-effort
   }

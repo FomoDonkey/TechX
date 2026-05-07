@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { TwoFactorClient } from "./client";
 
-export const metadata: Metadata = { title: "2FA · CSM" };
+export const metadata: Metadata = { title: "2FA · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function TwoFactorPage() {

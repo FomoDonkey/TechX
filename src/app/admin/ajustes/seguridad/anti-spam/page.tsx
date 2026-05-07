@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Anti-spam · CSM" };
+export const metadata: Metadata = { title: "Anti-spam · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function AntiSpamPage() {

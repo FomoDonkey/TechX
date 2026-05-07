@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateWebhookButton } from "./create-button";
 
-export const metadata: Metadata = { title: "Webhooks · CSM" };
+export const metadata: Metadata = { title: "Webhooks · techx" };
 export const dynamic = "force-dynamic";
 
 function formatDate(d: Date | null) {

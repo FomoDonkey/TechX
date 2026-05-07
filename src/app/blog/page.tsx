@@ -13,7 +13,9 @@ function quickReadingTime(text: string | null): number {
   return Math.max(1, Math.round((words * 6) / 220));
 }
 
-export const revalidate = 60;
+// F11a: multi-tenant por Host del request — el contenido depende del workspace
+// resuelto en `getDefaultPublicWorkspace()`. No es cacheable globalmente.
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Blog",

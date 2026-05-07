@@ -1,10 +1,20 @@
 import { generateImageAction } from "@/app/admin/medios/_ai-actions";
+import { requireWorkspace } from "@/lib/workspace";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  // Auth gate explícito en el route handler. Aunque la server action interna
+  // llama `requireWorkspace`, el endpoint público no debe ser accesible sin
+  // sesión: protege contra DoS-económico (gastar créditos AI desde anon).
+  try {
+    await requireWorkspace("editor");
+  } catch {
+    return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 401 });
+  }
+
   let body: unknown;
   try {
     body = await req.json();

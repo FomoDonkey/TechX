@@ -3,8 +3,8 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { db } from "@/db/client";
-import { insertReturning } from "@/db/dialect";
+import { db, dialect } from "@/db/client";
+import { countInt, insertReturning } from "@/db/dialect";
 import { type Webhook, webhookDeliveries, webhooks } from "@/db/schema";
 import { assertPublicUrl } from "@/lib/ssrf";
 import type { WebhookEvent } from "@/webhooks/events";
@@ -40,12 +40,27 @@ export async function listWebhooks(workspaceId: string): Promise<WebhookListItem
       lastSuccessAt: webhooks.lastSuccessAt,
       lastFailureAt: webhooks.lastFailureAt,
       createdAt: webhooks.createdAt,
-      deliveriesTotal: sql<number>`(
+      deliveriesTotal:
+        dialect === "postgres"
+          ? sql<number>`(
         SELECT count(*)::int FROM ${webhookDeliveries}
         WHERE ${webhookDeliveries.webhookId} = ${webhooks.id}
+      )`
+          : sql<number>`(
+        SELECT CAST(COUNT(*) AS SIGNED) FROM ${webhookDeliveries}
+        WHERE ${webhookDeliveries.webhookId} = ${webhooks.id}
       )`,
-      lastDeliveryStatus: sql<string | null>`(
+      // `${col}::text` cast PG-only para coaccionar enum/varchar a string. En MySQL
+      // las columnas string ya son string (status es varchar), no hace falta cast.
+      lastDeliveryStatus:
+        dialect === "postgres"
+          ? sql<string | null>`(
         SELECT ${webhookDeliveries.status}::text FROM ${webhookDeliveries}
+        WHERE ${webhookDeliveries.webhookId} = ${webhooks.id}
+        ORDER BY ${webhookDeliveries.createdAt} DESC LIMIT 1
+      )`
+          : sql<string | null>`(
+        SELECT ${webhookDeliveries.status} FROM ${webhookDeliveries}
         WHERE ${webhookDeliveries.webhookId} = ${webhooks.id}
         ORDER BY ${webhookDeliveries.createdAt} DESC LIMIT 1
       )`,
@@ -156,7 +171,7 @@ export async function rotateWebhookSecret(workspaceId: string, id: string): Prom
 export async function countByEvent(workspaceId: string) {
   if (!db) return new Map<string, number>();
   const rows = await db
-    .select({ event: webhookDeliveries.event, n: sql<number>`count(*)::int` })
+    .select({ event: webhookDeliveries.event, n: countInt() })
     .from(webhookDeliveries)
     .where(eq(webhookDeliveries.workspaceId, workspaceId))
     .groupBy(webhookDeliveries.event);

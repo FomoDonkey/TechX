@@ -13,6 +13,7 @@
 
 import { decryptKey, encryptKey } from "@/ai/key-crypto";
 import { db } from "@/db/client";
+import { upsert } from "@/db/dialect";
 import { aiProviderConfigs } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 
@@ -103,9 +104,8 @@ export async function setAiProviderConfig(
 
   // Drizzle no tiene un modo "no update if undefined" limpio para
   // upsert — manejamos como insert + on conflict update.
-  await db
-    .insert(aiProviderConfigs)
-    .values({
+  await upsert(aiProviderConfigs, {
+    values: {
       workspaceId,
       provider,
       apiKeyEncrypted: encryptedKey ?? "",
@@ -114,17 +114,16 @@ export async function setAiProviderConfig(
       enabled: patch.enabled ?? true,
       createdAt: now,
       updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [aiProviderConfigs.workspaceId, aiProviderConfigs.provider],
-      set: {
-        ...(shouldUpdateKey ? { apiKeyEncrypted: encryptedKey ?? "" } : {}),
-        ...(patch.model !== undefined ? { model: patch.model } : {}),
-        ...(patch.baseUrl !== undefined ? { baseUrl: patch.baseUrl } : {}),
-        ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
-        updatedAt: now,
-      },
-    });
+    },
+    target: [aiProviderConfigs.workspaceId, aiProviderConfigs.provider],
+    set: {
+      ...(shouldUpdateKey ? { apiKeyEncrypted: encryptedKey ?? "" } : {}),
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+      ...(patch.baseUrl !== undefined ? { baseUrl: patch.baseUrl } : {}),
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      updatedAt: now,
+    },
+  });
 }
 
 /**

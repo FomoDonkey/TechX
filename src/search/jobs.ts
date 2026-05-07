@@ -9,7 +9,7 @@
 
 import { embed } from "@/ai/embeddings";
 import { db } from "@/db/client";
-import { vectorLiteral } from "@/db/dialect";
+import { upsert, vectorLiteral } from "@/db/dialect";
 import { entries, searchIndexJobs } from "@/db/schema";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 
@@ -35,23 +35,21 @@ export async function enqueueIndex(input: {
     .limit(1);
   if (!meta) return;
   if (meta.branchId !== null) return;
-  await db
-    .insert(searchIndexJobs)
-    .values({
+  await upsert(searchIndexJobs, {
+    values: {
       workspaceId: input.workspaceId,
       entryId: input.entryId,
       status: "queued",
       updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: searchIndexJobs.entryId,
-      set: {
-        status: "queued",
-        attempts: 0,
-        error: null,
-        updatedAt: new Date(),
-      },
-    });
+    },
+    target: searchIndexJobs.entryId,
+    set: {
+      status: "queued",
+      attempts: 0,
+      error: null,
+      updatedAt: new Date(),
+    },
+  });
 }
 
 /**

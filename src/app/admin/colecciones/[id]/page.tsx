@@ -13,10 +13,10 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  if (!isUuid(id)) return { title: "Colección · CSM" };
+  if (!isUuid(id)) return { title: "Colección · techx" };
   const ctx = await requireWorkspace("editor");
   const c = await getCollectionById(ctx.workspace.id, id);
-  return { title: c ? `${c.name} · Colecciones · CSM` : "Colección · CSM" };
+  return { title: c ? `${c.name} · Colecciones · techx` : "Colección · techx" };
 }
 
 export default async function CollectionDetailPage({

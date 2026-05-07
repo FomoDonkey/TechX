@@ -6,7 +6,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Metadata } from "next";
 import { WorkflowKanban } from "./workflow-kanban";
 
-export const metadata: Metadata = { title: "Workflows · CSM" };
+export const metadata: Metadata = { title: "Workflows · techx" };
 export const dynamic = "force-dynamic";
 
 const COLUMNS: EntryStatus[] = ["draft", "review", "approved", "scheduled", "published"];

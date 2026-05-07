@@ -23,6 +23,7 @@
  */
 
 import { db } from "@/db/client";
+import { countDistinctInt } from "@/db/dialect";
 import {
   type EditorialAssignmentRole,
   branchComments,
@@ -183,7 +184,7 @@ async function countActiveAssignees(input: {
   if (!db) return 0;
   if (input.entryIds.length === 0) return 0;
   const [row] = await db
-    .select({ n: sql<number>`COUNT(DISTINCT ${entryAssignments.assigneeId})::int` })
+    .select({ n: countDistinctInt(entryAssignments.assigneeId) })
     .from(entryAssignments)
     .where(
       and(

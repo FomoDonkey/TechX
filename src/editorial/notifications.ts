@@ -1,5 +1,11 @@
 import { db } from "@/db/client";
-import { atomicClaim, atomicClaimMany, insertReturning, insertReturningMany } from "@/db/dialect";
+import {
+  atomicClaim,
+  atomicClaimMany,
+  countInt,
+  insertReturning,
+  insertReturningMany,
+} from "@/db/dialect";
 import { type Notification, notifications } from "@/db/schema";
 import { publishPubsub, subscribePubsub } from "@/lib/pubsub";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -199,7 +205,7 @@ export async function listNotifications(
       .orderBy(desc(notifications.createdAt))
       .limit(limit),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: countInt() })
       .from(notifications)
       .where(
         and(

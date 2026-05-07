@@ -1,22 +1,24 @@
+/**
+ * Sección Stack — solo dependencias técnicas reales del proyecto, no comparativas
+ * con CMS competidores. El stack es información honesta para developers.
+ */
 const stack = [
   { name: "Next.js 15", role: "Framework full-stack" },
   { name: "React 19", role: "Server Components" },
   { name: "TypeScript", role: "Strict mode" },
-  { name: "Drizzle", role: "ORM SQL-first" },
-  { name: "PostgreSQL", role: "Neon free tier" },
+  { name: "Drizzle ORM", role: "SQL-first, multi-dialect" },
+  { name: "PostgreSQL", role: "Postgres / MySQL" },
   { name: "pgvector", role: "Búsqueda semántica" },
-  { name: "Better-Auth", role: "Auth moderno + passkeys" },
+  { name: "Better-Auth", role: "Auth + passkeys + 2FA" },
   { name: "Tiptap v3", role: "Editor de bloques" },
+  { name: "Y.js", role: "Co-edición + cursors" },
   { name: "Tailwind v4", role: "OKLCH + container queries" },
   { name: "shadcn/ui", role: "Primitivas accesibles" },
   { name: "Framer Motion", role: "Animaciones" },
   { name: "Tremor", role: "Charts del dashboard" },
-  { name: "Vercel AI SDK", role: "Streaming de IA" },
-  { name: "Groq", role: "Llama 3.3 70B free" },
   { name: "Resend", role: "Email transaccional" },
   { name: "Stripe", role: "Memberships" },
-  { name: "Vercel", role: "Deploy en 60s" },
-  { name: "Biome", role: "Lint + format 10x" },
+  { name: "Biome", role: "Lint + format 10×" },
 ];
 
 export function Stack() {
@@ -27,7 +29,7 @@ export function Stack() {
           Construido sobre <span className="gradient-text">lo mejor de 2026</span>
         </h2>
         <p className="mt-3 text-muted-foreground">
-          Cero PHP. Cero plugins inseguros. Stack 100% gratis para arrancar.
+          Stack moderno, type-safe end-to-end. 100% gratis para arrancar.
         </p>
       </div>
 

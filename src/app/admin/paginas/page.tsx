@@ -8,7 +8,7 @@ import { requireWorkspace } from "@/lib/workspace";
 import { Eye, FileText, Home, Pencil, Plus, Sparkles } from "lucide-react";
 import Link from "next/link";
 
-export const metadata = { title: "Páginas · CSM" };
+export const metadata = { title: "Páginas · techx" };
 
 export default async function PagesPage({
   searchParams,

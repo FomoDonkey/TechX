@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { atomicClaim, insertReturning } from "@/db/dialect";
+import { atomicClaim, countInt, insertReturning } from "@/db/dialect";
 import {
   type EditorialMessage,
   type EditorialThread,
@@ -295,7 +295,7 @@ export async function listThreadsForEntry(workspaceId: string, entryId: string) 
 export async function countOpenThreads(workspaceId: string, entryId: string): Promise<number> {
   if (!db) return 0;
   const [r] = await db
-    .select({ n: sql<number>`count(*)::int` })
+    .select({ n: countInt() })
     .from(editorialThreads)
     .where(
       and(
@@ -423,14 +423,19 @@ async function emailOfflineMentions(args: {
   ]);
   const wsName = ws?.name ?? "tu workspace";
 
-  // Base URL: en serverless conviene usar el host del request, pero como esto
-  // se ejecuta server-side fuera del request, leemos el env de Vercel.
-  // `NEXT_PUBLIC_APP_URL` o `VERCEL_URL` con fallback "" → relativa funciona si
-  // el cliente abre el email en la misma máquina (rare). Para emails reales
-  // siempre absoluta: VERCEL_URL.
+  // Base URL: este código corre fuera de un request HTTP (worker, cron, async
+  // post-comment), así que no podemos derivar el host. Usamos `NEXT_PUBLIC_APP_URL`
+  // como fuente principal (configurada en `.env`) y caemos a `VERCEL_URL` solo
+  // si estamos en Vercel. En self-hosted (Docker EC2) el fallback será "" si
+  // alguien olvida `NEXT_PUBLIC_APP_URL`, pero esto se loggea en build vía Zod.
   const baseUrl =
     process.env.NEXT_PUBLIC_APP_URL ??
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  if (!baseUrl) {
+    console.warn(
+      "[mentions] NEXT_PUBLIC_APP_URL no configurado — los emails llevarán URLs relativas, los links no funcionarán fuera del CMS.",
+    );
+  }
   const url = `${baseUrl}/admin/contenido/${args.entryId}`;
 
   await Promise.all(

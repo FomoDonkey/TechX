@@ -24,7 +24,7 @@ export async function generateMetadata({
   const form = await resolveFormForRequest(slug);
   if (!form) return { title: "Form no encontrado" };
   return {
-    title: `${form.name} · CSM`,
+    title: `${form.name} · techx`,
     description: form.description ?? undefined,
   };
 }

@@ -2616,3 +2616,60 @@ export const aiProviderConfigs = pgTable(
 
 export type AiProviderConfig = typeof aiProviderConfigs.$inferSelect;
 export type NewAiProviderConfig = typeof aiProviderConfigs.$inferInsert;
+
+// ============================================================
+// F11a — Slug history (redirects 301 al renombrar el subdominio)
+// ============================================================
+// Cuando un workspace cambia su slug, registramos el viejo aquí. Durante
+// 30 días el middleware/resolver acepta el slug viejo y redirige 301 al
+// nuevo, evitando que enlaces compartidos rompan. Cleanup background.
+export const workspaceSlugHistory = pgTable(
+  "workspace_slug_history",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    oldSlug: text("old_slug").notNull(),
+    changedAt: timestamp("changed_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("workspace_slug_history_old_slug_idx").on(t.oldSlug),
+    index("workspace_slug_history_ws_idx").on(t.workspaceId),
+    index("workspace_slug_history_expires_idx").on(t.expiresAt),
+  ],
+);
+
+export type WorkspaceSlugHistory = typeof workspaceSlugHistory.$inferSelect;
+export type NewWorkspaceSlugHistory = typeof workspaceSlugHistory.$inferInsert;
+
+// ============================================================
+// F11a — Custom domain verification state
+// ============================================================
+// Una fila por workspace que está intentando vincular un dominio propio.
+// Hasta que `verifiedAt IS NOT NULL`, el dominio existe pero no resuelve.
+// Verificación por TXT record `csm-verify=<token>` o por CNAME apuntando
+// al ROOT_DOMAIN de la instancia.
+export const workspaceDomains = pgTable(
+  "workspace_domains",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull().unique(),
+    verifyToken: text("verify_token").notNull(),
+    verifiedAt: timestamp("verified_at"),
+    lastCheckedAt: timestamp("last_checked_at"),
+    lastCheckError: text("last_check_error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("workspace_domains_domain_idx").on(t.domain),
+    index("workspace_domains_ws_idx").on(t.workspaceId),
+  ],
+);
+
+export type WorkspaceDomain = typeof workspaceDomains.$inferSelect;
+export type NewWorkspaceDomain = typeof workspaceDomains.$inferInsert;

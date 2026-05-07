@@ -16,7 +16,7 @@ const phases: Array<{ id: string; title: string; desc: string; done: boolean }> 
   {
     id: "2",
     title: "Dashboard + Editor + Posts",
-    desc: "KPIs, DataTable, Tiptap completo, autosave, revisiones, render público.",
+    desc: "KPIs, DataTable, editor de bloques completo, autosave, revisiones, render público.",
     done: true,
   },
   {
@@ -28,7 +28,7 @@ const phases: Array<{ id: string; title: string; desc: string; done: boolean }> 
   {
     id: "4",
     title: "Collections Builder + Pages + Symbols",
-    desc: "Schema builder, page builder Framer-style, Symbols, Live-Edit overlay.",
+    desc: "Schema builder, page builder visual, Symbols reusables, Live-Edit overlay.",
     done: true,
   },
   {
@@ -40,13 +40,13 @@ const phases: Array<{ id: string; title: string; desc: string; done: boolean }> 
   {
     id: "6",
     title: "IA + búsqueda semántica + Comentarios",
-    desc: "AI inline ⌘J, voice, embeddings pgvector, Ask CSM, smart linking, moderación.",
+    desc: "AI inline ⌘J, voice-to-content, embeddings pgvector, chat RAG, smart linking, moderación.",
     done: true,
   },
   {
     id: "7",
     title: "APIs + Webhooks + Forms + CLI/SDK",
-    desc: "REST + GraphQL + OpenAPI, automations, forms builder, CLI csm, SDK tipado.",
+    desc: "REST + GraphQL + OpenAPI, automations, forms builder, CLI propia, SDK tipado.",
     done: true,
   },
   {
@@ -58,7 +58,7 @@ const phases: Array<{ id: string; title: string; desc: string; done: boolean }> 
   {
     id: "9",
     title: "Importadores + Branching + Calendar editorial",
-    desc: "WP/Notion/MD importers, content branching estilo Git, calendar + workflows + SLA.",
+    desc: "Importers universales, content branching tipo Git, calendar + workflows + SLA.",
     done: true,
   },
   {
@@ -70,31 +70,37 @@ const phases: Array<{ id: string; title: string; desc: string; done: boolean }> 
   {
     id: "10b",
     title: "Realtime Collaborative Editing",
-    desc: "Y.js + Tiptap cursors, presence global en TODO el admin, following mode, reactions live, mentions email.",
+    desc: "Y.js + cursors, presence global en TODO el admin, following mode, reactions live, mentions email.",
     done: true,
   },
   {
     id: "10c",
     title: "MCP server + Agente IA + Content Health",
-    desc: "MCP server con 14 tools (Claude Desktop, Cursor, VS Code), agente conversacional, Content Health scan semanal. Workflows durables Vercel WDK pendientes.",
+    desc: "MCP server con tools expuestas a agentes externos, agente conversacional, Content Health scan semanal.",
+    done: true,
+  },
+  {
+    id: "10g",
+    title: "Builder conversacional",
+    desc: "Construye sitios desde un prompt. Chat persistente para refinar. Preview en vivo con breakpoints. Provider-agnostic.",
     done: true,
   },
   {
     id: "10d",
     title: "Performance + PWA + Edge",
-    desc: "Lighthouse 100x4 con CI gate, bundle analyzer, dynamic imports admin, PWA + Dexie offline drafts, RUM propio.",
+    desc: "Lighthouse 100×4 con CI gate, bundle analyzer, dynamic imports admin, PWA + offline drafts, RUM propio.",
     done: false,
   },
   {
     id: "10e",
     title: "Operability + Scale",
-    desc: "Backups diarios pg_dump→Blob, retention policies, paginación cursor, branch restore, audit export CSV.",
+    desc: "Backups diarios pg_dump → Blob, retention policies, paginación cursor, branch restore, audit export CSV.",
     done: false,
   },
   {
     id: "10f",
     title: "Launch polish + Demo",
-    desc: "Seed espectacular, README con GIFs, Deploy to Vercel button, vercel.ts, video walkthrough, AI Site Generator E2E.",
+    desc: "Seed espectacular, README con GIFs, Deploy button, vercel.ts, video walkthrough.",
     done: false,
   },
 ];
@@ -104,10 +110,10 @@ export function Roadmap() {
     <section id="fases" className="mx-auto max-w-4xl px-4 py-32">
       <div className="mb-12 text-center">
         <h2 className="font-display text-4xl font-bold tracking-tight md:text-5xl">
-          Roadmap · <span className="gradient-text">13 de 16 fases listas</span>
+          Roadmap · <span className="gradient-text">14 de 17 fases listas</span>
         </h2>
         <p className="mt-3 text-muted-foreground">
-          F0–F10c entregadas. Cada fase deja el sistema utilizable y deployable.
+          Cada fase deja el sistema utilizable y deployable.
         </p>
       </div>
 

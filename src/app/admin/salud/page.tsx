@@ -5,7 +5,7 @@ import { Activity, AlertTriangle, Heart, Sparkles } from "lucide-react";
 import type { Metadata } from "next";
 import { HealthDashboard } from "./client";
 
-export const metadata: Metadata = { title: "Salud del contenido · CSM" };
+export const metadata: Metadata = { title: "Salud del contenido · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function SaludPage() {

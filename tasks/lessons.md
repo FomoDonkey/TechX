@@ -1,5 +1,177 @@
 # CSM — Lecciones aprendidas
 
+## 2026-05-06 — `dateTrunc()` parametrizado rompía GROUP BY en Postgres
+
+### Bug
+`/admin` cargaba todas las KPIs salvo las series temporales: la query daba `column "created_at" must appear in GROUP BY clause`. El SQL emitido por drizzle:
+
+```
+SELECT to_char(date_trunc('day', "comments"."created_at"), 'YYYY-MM-DD'), count(*)
+FROM "comments"
+GROUP BY date_trunc($3, "comments"."created_at")
+                       ↑ parametrizado
+```
+
+`formatDateIso()` inlineaba `'day'` (literal) pero `dateTrunc()` lo metía como `${unit}` en el template tagged → drizzle lo serializa como `$N`. Postgres analiza estas dos como expresiones distintas (`date_trunc('day', col)` vs `date_trunc($3, col)`) — no las matchea ni con `set transform_null_equals = on`. Resultado: la columna del SELECT no es funcionalmente dependiente del GROUP BY, error.
+
+### Fix
+Hardcodear el `unit` por branch del switch en el helper PG. El enum `DateUnit` es cerrado (5 valores), así que no hay riesgo de injection y mantenemos el helper genérico para callers:
+
+```ts
+if (dialect === "postgres") {
+  switch (unit) {
+    case "hour":  return sql<Date>`date_trunc('hour',  ${column})`;
+    case "day":   return sql<Date>`date_trunc('day',   ${column})`;
+    // …
+  }
+}
+```
+
+### Lección
+- En **drizzle**, `${string}` dentro de un template `sql\`...\`` se parametriza salvo que uses `sql.raw(...)`. Si la cadena necesita aparecer textualmente (parte de un identifier, una función con literal SQL especial), hardcodearla por branch o pasarla por `sql.raw()` con whitelist.
+- **GROUP BY/SELECT functional dependency** en Postgres se hace por matching textual de expresiones, no por evaluación. Reglas más laxas serían imposibles sin evaluar parámetros en planning.
+- **Bugs latentes en helpers genéricos**: este fix arregló 9 callsites de un solo cambio. Cuando un helper falla, vale la pena auditar todos sus consumidores en lugar de parchear callsite a callsite.
+
+## 2026-05-06 — Mega auditoría profunda (5 agentes + ~50 fixes adicionales)
+
+### Lo que disparó la auditoría
+Tras el primer hardening cross-dialect, el usuario pidió "audita en profundidad y verifica que todo esté totalmente perfecto". Lancé **5 agentes Explore en paralelo** con foco distinto: cross-dialect, auth/multi-tenant, build/runtime, F1 templates, ops/config.
+
+### 15 hallazgos de los agentes (vs lo que descubrí en mi propia revisión)
+Los agentes detectaron **15 issues**: 7 🔴 críticos + 5 🟡 importantes + 3 🟢 nice. Yo además detecté **otros 30+ patrones PG-only** durante el grep posterior — los agentes Explore tienen un read window limitado y pierden patrones repartidos por muchos archivos. Lección: **después de un agente, hacer grep manual amplio del dominio que auditó**.
+
+### Categorías de bugs encontrados
+
+1. **Multi-tenant defense in depth** (2 hits): `src/api/v1/entries.ts:326,409` hacían `select.where(eq(id))` post-update sin verificar workspaceId. No era exploit (el id viene de un insert previamente filtrado), pero patrón de footgun. Fix: `eq(workspaceId)` adicional siempre.
+
+2. **Endpoint sin auth gate** (1 hit): `src/app/api/admin/media/generate/route.ts` — POST llamaba server action sin auth en el route handler. Defense in depth: añadir `requireWorkspace("editor")` explícito en el endpoint (la SA interna también valida, pero el endpoint debe rechazar antes).
+
+3. **`::text` ILIKE sobre JSON** (2 hits): `forms/lib.ts:258`, `lib/asset-usage.ts:38` — `${col}::text ILIKE` rompe en MySQL. Fix: helper `iLikeJson` cross-dialect.
+
+4. **`date_trunc()` y `to_char()`** (~7 hits): dashboard, calendar, A/B analytics. Fix: helpers `dateTrunc()` y `formatDateIso()` en `dialect/datetime.ts`.
+
+5. **`count(*)::int` PG-only** (~30 hits en 22 archivos): el cast `::int` es necesario en PG (postgres-js devuelve bigint→string sin él), pero rompe en MySQL. Fix: helper `countInt()` cross-dialect.
+
+6. **`COUNT(DISTINCT col)::int`** (2 hits): fix con helper `countDistinctInt()`.
+
+7. **`COUNT(*) FILTER (WHERE ...)::int`** (~10 hits en campaigns/imports): sintaxis SQL-2003 que solo PG implementa; MySQL necesita `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`. Fix: helper `countFilterInt(condition)`.
+
+8. **`SUM(col)::int`** (5 hits en ai/usage.ts): fix con helper `sumInt(col)`.
+
+9. **`extract(dow|hour from col)::int`** (2 hits en editorial/ai-schedule.ts): MySQL usa `DAYOFWEEK()` (1-7) y `HOUR()` (0-23). Helper `extractDayOfWeek()` mapea `DAYOFWEEK-1` para igualar el rango PG (0-6).
+
+10. **Raw SQL templates con `::text`/`::uuid`** (3 hits en branches/, graphql/, ai/usage.ts): cuando el call-site requiere raw `db.execute(sql\`...\`)` con SELECT complejo, fix es **inline `dialect === "postgres" ? sqlA : sqlB`** porque el query entero cambia. La duplicación es manageable (queries pequeñas) y mantiene legibilidad mejor que abstraer.
+
+11. **Better-Auth `provider: "pg"`** ya cubierto en pase anterior. Plus: `trustedOrigins` ahora acepta `AUTH_EXTRA_ORIGINS` env (CSV) para deploys con dominio + IP simultáneo.
+
+12. **`VERCEL_URL` fallback en self-hosted** (`src/editorial/comments.ts:432`): con `NEXT_PUBLIC_APP_URL` ausente, los emails de menciones llevaban URL vacía. Fix: warn explícito al detectarlo.
+
+13. **IPv6 comprimida `2001:db8::1`** (`src/lib/ip-anon.ts`): el split-filter trataba la compresión `::` como hextet inexistente; ahora hay `expandIpv6()` que normaliza a 8 hextets antes de truncar a /48.
+
+### Lecciones de proceso
+
+1. **Los agentes Explore son read-window-limited.** Si auditas un dominio amplio (~hits >20), **complementa con tu propio grep masivo después**. El agente da el patrón general, tú haces la pasada exhaustiva.
+
+2. **Los helpers cross-dialect deben crecer con el código.** Cada vez que aparece un patrón PG-only en N archivos, vale la pena un helper en `dialect/`. El coste del helper (~20 líneas) se paga con creces en el primer audit cross-DB.
+
+3. **Para queries con `dialect === "postgres" ? ... : ...` inline**, está OK cuando son queries grandes y específicas (raw SQL execute, cursor pagination con casts). Abstraer todo a helpers cuando no se reusa es over-engineering.
+
+4. **Defense in depth en multi-tenant**: aunque el id venga de un insert "trusted", añadir `eq(workspaceId)` al select posterior cuesta 0 en perf y elimina footguns futuros. Patrón uniforme > optimización marginal.
+
+5. **No te fíes solo del typecheck.** TypeScript valida shape, no SQL. Para detectar PG-only, grep por patrones literal (`date_trunc`, `::int`, `::uuid`, `extract(`, etc.) es lo que funciona.
+
+### Estado final tras esta sesión
+- `npm run typecheck` → ✅
+- `npm run build` → ✅ (54 routes, sin warnings nuevos)
+- 4 helpers nuevos en `dialect/`: `iLikeJson`, `dateTrunc`, `formatDateIso`, `extractDayOfWeek`, `extractHour`, `countInt`, `sumInt`, `countDistinctInt`, `countFilterInt`
+- ~45 call-sites refactorizados a helpers cross-dialect
+- 5 inline `dialect === "postgres" ? ... : ...` para queries grandes que no abstraen bien
+- 3 issues 🟢 nice deferred (ics rate-limit, CSV `""` escape, teamColor fallback)
+
+---
+
+## 2026-05-06 — Hardening cross-dialect total (16 call-sites + Better-Auth + helpers)
+
+### Problema: typecheck verde ≠ runtime verde en MySQL
+Tras el F1 deploy hardening inicial, dije al usuario que "está listo" basándome en `npm run typecheck`. Auditoría posterior reveló **16 call-sites con sintaxis Postgres-only** que TypeScript no detecta porque son métodos válidos en el tipo `PgInsertBuilder` (drizzle re-exporta como pg en `schema.ts` barrel):
+- `Better-Auth provider: "pg"` hardcoded en `src/auth/index.ts:16` → `signUpEmail` falla en MySQL
+- 15 `onConflictDo*` directos repartidos por todo `src/` (paths críticos: branches/lib.ts, lib/entries.ts, auth/rate-limit.ts, presence, collab, csp-report, ai/keys, ai/usage, ai/moderation, search/jobs, health/scan, ab/engine, imports/engine, api/runtime, invitations)
+
+**Lección general:** TypeScript valida **shape**, no SQL emitido. Con dual schema MySQL/PG donde el barrel re-exporta uno como verdad de tipos, hay que **grep** los métodos PG-only manualmente. Lista de patrones a auditar:
+- `.onConflictDoNothing(`, `.onConflictDoUpdate(` → reemplazar por `upsertNothing`/`upsert`
+- `.returning()` → reemplazar por `insertReturning`/`upsertReturning` o lookup post-insert
+- SQL fragments con `to_tsvector`, `::vector`, `gen_random_uuid()`, `<=>`
+- `.array()`, `.defaultRandom()` solo en `schema.pg.ts`
+- `provider: "pg"` literal hardcoded
+
+### Solución: 4 cambios estructurales
+
+1. **`upsertNothing` con `target` opcional** (`src/db/dialect/upsert.ts`) — los call-sites sin target específico (`onConflictDoNothing()` solo) ahora pasan por el helper. Postgres → `ON CONFLICT DO NOTHING` (cualquier UNIQUE/PK), MySQL → `INSERT IGNORE`.
+
+2. **Better-Auth provider auto-detectado** (`src/auth/index.ts`) — `provider: dialect === "mysql" ? "mysql" : "pg"`. El mismo build funciona contra ambos motores sin tocar config.
+
+3. **Patrón `tx` dentro de transaction** — los helpers usan `db` global, no aceptan `tx`. Para casos dentro de transacción (`health/scan.ts`, `invitations/[token]/route.ts`), inline `if (dialect === "mysql") { tx.insert().ignore() } else { tx.insert().onConflictDoNothing() }`. Solo 2 sitios; el coste de extender el helper para aceptar `tx` con typing cross-dialect supera el beneficio.
+
+4. **15 call-sites refactorizados** a `upsert(...)` o `upsertNothing(...)`. Imports añadidos en cada archivo: `import { upsert, upsertNothing } from "@/db/dialect"`.
+
+### Verificación
+- `npm run typecheck` → ✅
+- `npm run build` → ✅ (54 routes generadas, sin warnings nuevos)
+- `grep onConflictDo` solo retorna ahora: helpers (`upsert.ts`, `upsert-returning.ts`) y los 2 inline-tx, todos cross-dialect.
+
+### Lección de proceso
+Cuando alguien pide "está perfecto?" y la respuesta es honesta "casi, hay X gaps", **ofrecer el fix antes que vender el cierre**. El usuario aceptó el hardening en cuanto le mostré el detalle de los 16 sitios; si hubiera dicho "sí, está listo" y luego saliera el bug en el deploy real, la confianza desaparece. Honestidad calibrada (precisa, no auto-flagelante) gana por encima de cierre prematuro.
+
+---
+
+## 2026-05-06 — Setup F1 deploy (compose override + VECTOR fallback + INSERT IGNORE)
+
+### Problema 1: docker-compose.yml hardcodeaba `DATABASE_URL=postgres://...@postgres:5432/...`
+Si el operador quería apuntar a una BD externa (Neon, RDS, MySQL del SDS para F1), el doc le obligaba a **comentar a mano el servicio postgres del compose y editar la línea DATABASE_URL**. No es "fácil de configurar" y rompe la próxima vez que el repo se actualice (merge conflicts en el compose).
+
+**Solución:** `docker-compose.external-db.yml` como override:
+- `services.postgres.profiles: ["disabled"]` — excluye el container del default `up` sin tener que tocar el compose principal.
+- `services.csm.environment.DATABASE_URL: ${DATABASE_URL:?...}` — sobrescribe la versión calculada con `:?` para fallar con mensaje claro si el operador olvida definirlo.
+- `services.csm.depends_on: !reset []` — sintaxis Docker Compose v2.24+ para limpiar el `depends_on: postgres` del compose base sin re-declarar todo el servicio.
+
+Uso: `docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d csm`. El compose principal queda intacto y el caso "BD local en compose" sigue funcionando con `docker compose up -d` solo.
+
+### Problema 2: VECTOR(N) en MySQL 8.x rompe `db:push`
+`schema.mysql.ts` declaraba `customType` que renderiza siempre `VECTOR(N)`. MySQL 9+ lo soporta nativo, pero **MySQL 8.4 (el que está desplegado en el SDS) no lo conoce** y `drizzle-kit push` falla con `Unknown data type: 'VECTOR'`.
+
+**Solución:** env var `MYSQL_VECTOR_FALLBACK=true` que el `dataType()` del customType lee al evaluar el schema. Si está activa, devuelve `VARBINARY(8192)` (suficiente para 1536 floats × 4 bytes). La búsqueda semántica nativa queda offload a Qdrant si lo configuras; en otro caso se deshabilita gracefully.
+
+**Por qué env var y no detección runtime:** drizzle-kit push evalúa el schema en build, no tiene conexión a la BD para hacer `SELECT VERSION()`. El operador del despliegue declara explícitamente qué BD tiene.
+
+### Problema 3: `seed.ts` usaba `onConflictDoNothing` (Postgres-only)
+`seed.ts:57` rompía en MySQL porque drizzle-orm/mysql2 no implementa `.onConflictDoNothing()` (existe `.onDuplicateKeyUpdate()` y `.ignore()`).
+
+**Solución:** helper `upsertNothing(table, {values, target})` en `src/db/dialect/upsert.ts` que enruta:
+- Postgres → `INSERT ... ON CONFLICT (target) DO NOTHING`
+- MySQL → `INSERT IGNORE` (la opción `.ignore()` de drizzle-orm/mysql-core silencia conflicts PK/UNIQUE sin tocar la fila existente)
+
+Reemplazo en `seed.ts` deja el código cross-dialect sin if/else en el call-site.
+
+### Problema 4: Doc no etiquetaba qué máquina ejecuta cada comando
+El doc PROYECTO-F1-CMS-DEPLOY.md mezclaba comandos `mysql`, `docker compose`, `ssh`, `npm` sin indicar **dónde** ejecutarlos. Para un compañero que sigue el doc, "abre un mysql" puede ser desde el portátil o desde la EC2 — el resultado del grant cambia.
+
+**Solución (didáctica más que técnica):**
+- Sección 0 **"Inicio rápido en 5 comandos"** al principio del doc.
+- Sección 0.1 **"Mapa de máquinas"** con tabla de 4 emojis: 🟦 SDS / 🟧 EC2 / 🟩 Local / 🟪 Container.
+- Sección 0.2 **"Cómo construir DATABASE_URL"** desglosando cada componente (de qué paso sale cada valor).
+- Sección 0.3 **"Cómo generar AUTH_SECRET"** con tres opciones (`openssl`, `npm run gen:secret`, etc.) y el listado de errores comunes (placeholder, cambio post-deploy).
+- Etiqueta `🟦/🟧/🟩/🟪` añadida al inicio de cada sección y bloque de código.
+
+### Lección general
+Cuando entregas un sistema a un compañero/cliente para que lo despliegue:
+1. **Empieza el doc por "TL;DR en N comandos"** — la mayoría va a copiar-pegar sin leer el resto.
+2. **Etiqueta cada bloque con la máquina objetivo** — ambigüedad genera errores de seguridad (grants a IPs equivocadas, credenciales en hosts equivocados).
+3. **Reduce los pasos manuales con scripts** — `npm run f1:setup` reemplaza 3 comandos manuales (clone + sync + verify). `gen:secret` reemplaza buscar el comando OpenSSL.
+4. **Para cada secret/credential, documenta cómo generarlo Y dónde sale cada componente** — `DATABASE_URL` no es una caja negra, es un string compuesto por 5 piezas que el lector debe poder mapear paso a paso.
+5. **Override compose > editar compose principal** — los overrides son compositivos, no rompen el caso original, y son trivialmente reverdables (no incluir el `-f`).
+
+---
+
 ## 2026-05-05 — Plantillas espectaculares editables (showcase ↔ blocks parity)
 
 ### El problema de la decisión "preview ≠ inserted page"

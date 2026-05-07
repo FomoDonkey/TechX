@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db } from "@/db/client";
-import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
+import { countInt, deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import {
   type Subscriber,
   campaignRecipients,
@@ -407,7 +407,7 @@ export async function listSubscribers(opts: ListSubscribersOpts) {
   if (opts.tag) conds.push(sql`${opts.tag} = ANY(${subscribers.tags})`);
 
   const [count] = await db
-    .select({ c: sql<number>`count(*)::int` })
+    .select({ c: countInt() })
     .from(subscribers)
     .where(and(...conds));
   const orderCol =
@@ -686,7 +686,7 @@ export async function loadByIds(workspaceId: string, ids: string[]): Promise<Sub
 export async function countSubscribersByCampaign(campaignId: string): Promise<number> {
   if (!db) return 0;
   const [c] = await db
-    .select({ c: sql<number>`count(*)::int` })
+    .select({ c: countInt() })
     .from(campaignRecipients)
     .where(eq(campaignRecipients.campaignId, campaignId));
   return c?.c ?? 0;

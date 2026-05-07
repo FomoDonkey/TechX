@@ -22,9 +22,20 @@
  * usando Drizzle directamente — no se necesita helper.
  */
 
-export { iLike, ciContains } from "./ilike";
+export { iLike, iLikeJson, ciContains } from "./ilike";
+export {
+  dateTrunc,
+  formatDateIso,
+  extractDayOfWeek,
+  extractHour,
+  countInt,
+  sumInt,
+  countDistinctInt,
+  countFilterInt,
+  type DateUnit,
+} from "./datetime";
 export { insertReturning, insertReturningMany } from "./insert-returning";
-export { upsert } from "./upsert";
+export { upsert, upsertNothing } from "./upsert";
 export { deleteReturningCount, deleteReturningRows } from "./delete-returning";
 export { upsertReturning, type UpsertArgs } from "./upsert-returning";
 export { atomicClaim, atomicClaimMany, type AtomicClaimArgs } from "./atomic-claim";

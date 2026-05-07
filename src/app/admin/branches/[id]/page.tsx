@@ -18,7 +18,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { BranchDetailClient } from "./client";
 
-export const metadata: Metadata = { title: "Branch · CSM" };
+export const metadata: Metadata = { title: "Branch · techx" };
 export const dynamic = "force-dynamic";
 
 const STATUS_LABEL: Record<string, string> = {

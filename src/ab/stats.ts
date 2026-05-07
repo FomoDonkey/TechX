@@ -13,6 +13,7 @@
  */
 
 import { db } from "@/db/client";
+import { countDistinctInt } from "@/db/dialect";
 import { abEvents } from "@/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -78,7 +79,7 @@ export async function computeTestResults(
     .select({
       variantId: abEvents.variantId,
       kind: abEvents.kind,
-      uniques: sql<number>`COUNT(DISTINCT ${abEvents.anonId})::int`,
+      uniques: countDistinctInt(abEvents.anonId),
     })
     .from(abEvents)
     .where(eq(abEvents.testId, testId))

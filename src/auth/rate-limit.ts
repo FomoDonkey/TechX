@@ -15,6 +15,7 @@
  */
 
 import { db } from "@/db/client";
+import { upsert } from "@/db/dialect";
 import { rateLimits } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -40,13 +41,11 @@ export async function rateLimit(args: {
   const [existing] = await db.select().from(rateLimits).where(eq(rateLimits.key, key)).limit(1);
 
   if (!existing) {
-    await db
-      .insert(rateLimits)
-      .values({ id: nanoid(), key, count: 1, lastRequest: now })
-      .onConflictDoUpdate({
-        target: rateLimits.key,
-        set: { count: 1, lastRequest: now },
-      });
+    await upsert(rateLimits, {
+      values: { id: nanoid(), key, count: 1, lastRequest: now },
+      target: rateLimits.key,
+      set: { count: 1, lastRequest: now },
+    });
     return { ok: true, remaining: args.max - 1 };
   }
 

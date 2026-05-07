@@ -20,7 +20,8 @@
  * por workspace es la segunda.
  */
 
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
+import { sumInt, upsert } from "@/db/dialect";
 import { aiUsageDaily, settings } from "@/db/schema";
 import { and, between, eq, sql } from "drizzle-orm";
 
@@ -103,17 +104,15 @@ export async function setAiBudget(workspaceId: string, config: AiBudgetConfig): 
   if (config.monthlyBudgetMicros < 0 || config.alertAtPct < 0 || config.alertAtPct > 1) {
     throw new Error("Config inválida");
   }
-  await db
-    .insert(settings)
-    .values({
+  await upsert(settings, {
+    values: {
       workspaceId,
       key: AI_BUDGET_SETTINGS_KEY,
       value: config,
-    })
-    .onConflictDoUpdate({
-      target: [settings.workspaceId, settings.key],
-      set: { value: config },
-    });
+    },
+    target: [settings.workspaceId, settings.key],
+    set: { value: config },
+  });
 }
 
 /**
@@ -204,18 +203,46 @@ export async function recordAiUsage(input: {
   const calls = input.calls ?? 1;
   const cost = Math.max(0, Math.floor(input.costMicrosUsd ?? 0));
 
+  // userId NULL se normaliza a "" porque el unique compuesto
+  // (workspaceId, userId, day, feature) en MySQL trata NULL como NO-igual entre sí
+  // (cada NULL es distinto). En Postgres se respeta vía `COALESCE(user_id, '')`
+  // en el partial index — pero ese index no existe en MySQL.
+  // ADR-002 normaliza: el caller pasa "" en lugar de null.
+  const normalizedUserId = input.userId ?? "";
   try {
-    // UPSERT atómico — el unique index permite el ON CONFLICT.
-    // userId NULL se trata como "" via COALESCE en el index.
-    await db.execute(sql`
-      INSERT INTO ai_usage_daily (workspace_id, user_id, day, feature, calls_count, cost_micros_usd, updated_at)
-      VALUES (${input.workspaceId}::uuid, ${input.userId ?? null}, ${today}, ${input.feature}, ${calls}, ${cost}, NOW())
-      ON CONFLICT (workspace_id, COALESCE(user_id, ''), day, feature)
-      DO UPDATE SET
-        calls_count = ai_usage_daily.calls_count + ${calls},
-        cost_micros_usd = ai_usage_daily.cost_micros_usd + ${cost},
-        updated_at = NOW()
-    `);
+    if (dialect === "postgres") {
+      // Postgres: aprovechamos el partial index `COALESCE(user_id, '')` con ON CONFLICT.
+      await db.execute(sql`
+        INSERT INTO ai_usage_daily (workspace_id, user_id, day, feature, calls_count, cost_micros_usd, updated_at)
+        VALUES (${input.workspaceId}, ${input.userId ?? null}, ${today}, ${input.feature}, ${calls}, ${cost}, NOW())
+        ON CONFLICT (workspace_id, COALESCE(user_id, ''), day, feature)
+        DO UPDATE SET
+          calls_count = ai_usage_daily.calls_count + ${calls},
+          cost_micros_usd = ai_usage_daily.cost_micros_usd + ${cost},
+          updated_at = NOW()
+      `);
+    } else {
+      // MySQL: ON DUPLICATE KEY UPDATE sobre el unique compuesto. userId="" garantiza
+      // que dos rows con mismo (ws, day, feature) y user vacío matcheen el unique.
+      // biome-ignore lint/suspicious/noExplicitAny: Drizzle MySQL chain typing
+      await (db
+        .insert(aiUsageDaily)
+        .values({
+          workspaceId: input.workspaceId,
+          userId: normalizedUserId,
+          day: today,
+          feature: input.feature,
+          callsCount: calls,
+          costMicrosUsd: cost,
+          updatedAt: new Date(),
+        }) as any).onDuplicateKeyUpdate({
+        set: {
+          callsCount: sql`${aiUsageDaily.callsCount} + ${calls}`,
+          costMicrosUsd: sql`${aiUsageDaily.costMicrosUsd} + ${cost}`,
+          updatedAt: new Date(),
+        },
+      });
+    }
   } catch (err) {
     if (process.env.NODE_ENV !== "production") console.warn("[ai/usage] record failed", err);
   }
@@ -227,7 +254,7 @@ async function getMonthlySpend(workspaceId: string): Promise<number> {
   const end = endOfMonthUtc();
   const [row] = await db
     .select({
-      total: sql<number>`COALESCE(SUM(${aiUsageDaily.costMicrosUsd}), 0)::int`,
+      total: sumInt(aiUsageDaily.costMicrosUsd),
     })
     .from(aiUsageDaily)
     .where(and(eq(aiUsageDaily.workspaceId, workspaceId), between(aiUsageDaily.day, start, end)));
@@ -285,8 +312,8 @@ export async function getAiUsageSummary(workspaceId: string): Promise<{
   const featureRows = (await db
     .select({
       feature: aiUsageDaily.feature,
-      calls: sql<number>`SUM(${aiUsageDaily.callsCount})::int`,
-      micros: sql<number>`SUM(${aiUsageDaily.costMicrosUsd})::int`,
+      calls: sumInt(aiUsageDaily.callsCount),
+      micros: sumInt(aiUsageDaily.costMicrosUsd),
     })
     .from(aiUsageDaily)
     .where(and(eq(aiUsageDaily.workspaceId, workspaceId), between(aiUsageDaily.day, start, end)))
@@ -295,8 +322,8 @@ export async function getAiUsageSummary(workspaceId: string): Promise<{
   const userRows = (await db
     .select({
       userId: aiUsageDaily.userId,
-      calls: sql<number>`SUM(${aiUsageDaily.callsCount})::int`,
-      micros: sql<number>`SUM(${aiUsageDaily.costMicrosUsd})::int`,
+      calls: sumInt(aiUsageDaily.callsCount),
+      micros: sumInt(aiUsageDaily.costMicrosUsd),
     })
     .from(aiUsageDaily)
     .where(and(eq(aiUsageDaily.workspaceId, workspaceId), between(aiUsageDaily.day, start, end)))

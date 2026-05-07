@@ -16,6 +16,7 @@
  */
 
 import { db } from "@/db/client";
+import { upsert } from "@/db/dialect";
 import { collabSnapshots, collabUpdates, entries } from "@/db/schema";
 import { publishPubsub } from "@/lib/pubsub";
 import { and, asc, eq, lte, sql } from "drizzle-orm";
@@ -200,22 +201,20 @@ async function compactSnapshot(entryId: string, workspaceId: string): Promise<vo
     const mergedB64 = uint8ToBase64(merged);
     const cutoff = last.createdAt;
 
-    await db
-      .insert(collabSnapshots)
-      .values({
+    await upsert(collabSnapshots, {
+      values: {
         entryId,
         workspaceId,
         state: mergedB64,
         bytes: merged.byteLength,
-      })
-      .onConflictDoUpdate({
-        target: collabSnapshots.entryId,
-        set: {
-          state: mergedB64,
-          bytes: merged.byteLength,
-          updatedAt: new Date(),
-        },
-      });
+      },
+      target: collabSnapshots.entryId,
+      set: {
+        state: mergedB64,
+        bytes: merged.byteLength,
+        updatedAt: new Date(),
+      },
+    });
 
     // GC: borramos updates ya consolidados (createdAt <= cutoff). Los más nuevos
     // que llegasen entre el read y el delete se conservan para la siguiente compaction.

@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
+import { countInt, deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
 import { media, mediaFolders } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import {
@@ -216,7 +216,7 @@ export async function listMedia(params: ListMediaParams): Promise<{
 
   const [rows, totalRow] = await Promise.all([
     db.select().from(media).where(where).orderBy(order).limit(limit).offset(offset),
-    db.select({ n: sql<number>`count(*)::int` }).from(media).where(where),
+    db.select({ n: countInt() }).from(media).where(where),
   ]);
 
   return { rows, total: totalRow[0]?.n ?? 0 };

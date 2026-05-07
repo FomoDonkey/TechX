@@ -323,7 +323,11 @@ export async function createEntryHandler(input: {
     meta: { via: "api", apiKeyId: ctx.apiKey.id, title: body.title, slug },
   });
 
-  const [final] = await db.select().from(entries).where(eq(entries.id, createdRow.id)).limit(1);
+  const [final] = await db
+    .select()
+    .from(entries)
+    .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, createdRow.id)))
+    .limit(1);
   if (!final) throw conflict("La entrada se creó pero no se pudo recuperar");
 
   emitAsync({
@@ -406,7 +410,11 @@ export async function updateEntryHandler(input: {
     .set(updates)
     .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, params.id)));
 
-  const [final] = await db.select().from(entries).where(eq(entries.id, params.id)).limit(1);
+  const [final] = await db
+    .select()
+    .from(entries)
+    .where(and(eq(entries.workspaceId, ctx.workspaceId), eq(entries.id, params.id)))
+    .limit(1);
   if (!final) throw notFound("Entrada no encontrada tras update");
   await logActivity({
     workspaceId: ctx.workspaceId,

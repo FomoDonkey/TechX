@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, ChevronsUpDown, Plus } from "lucide-react";
+import { Check, ChevronsUpDown, LayoutGrid, Plus } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { setWorkspaceCookie } from "./_actions";
@@ -75,17 +76,22 @@ export function WorkspaceSwitcher({
               ))}
             </ul>
             <div className="my-1 h-px bg-border" />
-            <button
-              type="button"
-              disabled
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-muted-foreground/70"
+            <Link
+              href="/admin/sitios"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/60"
             >
-              <Plus className="size-3.5" />
-              <span className="flex-1 text-left">Crear workspace</span>
-              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider">
-                pronto
-              </span>
-            </button>
+              <LayoutGrid className="size-3.5 text-muted-foreground" />
+              <span className="flex-1 text-left">Ver todos mis sitios</span>
+            </Link>
+            <Link
+              href="/admin/sitios/nuevo"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/60"
+            >
+              <Plus className="size-3.5 text-muted-foreground" />
+              <span className="flex-1 text-left">Crear nuevo sitio</span>
+            </Link>
           </div>
         </>
       ) : null}

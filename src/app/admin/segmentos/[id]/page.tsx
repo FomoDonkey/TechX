@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { SegmentEditor } from "../_editor";
 
-export const metadata: Metadata = { title: "Editar segmento · CSM" };
+export const metadata: Metadata = { title: "Editar segmento · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function EditSegmentPage(props: { params: Promise<{ id: string }> }) {

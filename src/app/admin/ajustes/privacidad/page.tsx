@@ -11,7 +11,7 @@ import { redirect } from "next/navigation";
 import { cancelDeletionAction } from "./_actions";
 import { RequestDeletionButton } from "./client";
 
-export const metadata: Metadata = { title: "Privacidad · CSM" };
+export const metadata: Metadata = { title: "Privacidad · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function PrivacidadPage() {

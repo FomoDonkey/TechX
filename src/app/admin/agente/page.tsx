@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AgentChat } from "./client";
 
-export const metadata: Metadata = { title: "Agente · CSM" };
+export const metadata: Metadata = { title: "Agente · techx" };
 export const dynamic = "force-dynamic";
 
 const SUGGESTIONS = [

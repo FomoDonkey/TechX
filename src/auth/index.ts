@@ -1,4 +1,4 @@
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
 import * as schema from "@/db/schema";
 import { env, features } from "@/env";
 import { sendEmailVerification, sendMagicLinkEmail } from "@/lib/email";
@@ -13,7 +13,10 @@ function buildAuth() {
   return betterAuth({
     appName: "CSM",
     database: drizzleAdapter(db, {
-      provider: "pg",
+      // Better-Auth soporta "pg" / "mysql" / "sqlite". Detectamos del
+      // DATABASE_URL via `dialect` para que el mismo build funcione contra
+      // ambos motores sin tocar la config.
+      provider: dialect === "mysql" ? "mysql" : "pg",
       schema: {
         user: schema.users,
         session: schema.sessions,
@@ -25,7 +28,14 @@ function buildAuth() {
     }),
     secret: env.AUTH_SECRET,
     baseURL: env.NEXT_PUBLIC_APP_URL,
-    trustedOrigins: [env.NEXT_PUBLIC_APP_URL],
+    // `trustedOrigins` controla los Origin headers que Better-Auth acepta para
+    // OAuth callbacks y CSRF. En self-hosted (EC2) puede ser distinto al
+    // dominio que está detrás de Caddy — por eso permitimos extras vía env.
+    // Ej: AUTH_EXTRA_ORIGINS=https://csm.example.com,http://1.2.3.4:3000
+    trustedOrigins: [
+      env.NEXT_PUBLIC_APP_URL,
+      ...(process.env.AUTH_EXTRA_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? []),
+    ],
 
     emailAndPassword: {
       enabled: true,

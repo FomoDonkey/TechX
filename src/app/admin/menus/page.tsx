@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { CreateMenuButton } from "./create-button";
 
-export const metadata: Metadata = { title: "Menús · CSM" };
+export const metadata: Metadata = { title: "Menús · techx" };
 export const dynamic = "force-dynamic";
 
 const LOCATION_LABEL: Record<string, string> = {

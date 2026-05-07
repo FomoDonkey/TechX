@@ -183,7 +183,7 @@ export function LoginForm({
       } else if (msg === "challenge_expired") {
         toast.error("La passkey caducó. Vuelve a intentarlo.");
       } else if (msg === "unknown_credential") {
-        toast.error("Esta passkey no está registrada en CSM.");
+        toast.error("Esta passkey no está registrada.");
       } else {
         toast.error("No se pudo entrar con passkey");
         console.error(e);

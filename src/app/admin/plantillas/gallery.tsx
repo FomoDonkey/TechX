@@ -75,6 +75,7 @@ const CATEGORY_LABEL: Record<PageTemplateCategory, string> = {
   blog: "Blog",
   newsletter: "Newsletter",
   launch: "Lanzamiento",
+  sports: "Deportes",
 };
 
 export function TemplatesGallery({ templates, categories, errorMsg }: Props) {

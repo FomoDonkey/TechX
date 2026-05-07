@@ -5,7 +5,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@/db/client";
-import { deleteReturningCount, iLike as ilike, insertReturning } from "@/db/dialect";
+import { deleteReturningCount, iLike as ilike, iLikeJson, insertReturning } from "@/db/dialect";
 import {
   type Form,
   type FormVersion,
@@ -254,8 +254,8 @@ export async function listSubmissions(input: SubmissionListInput): Promise<Submi
   if (input.from) conditions.push(gte(submissions.createdAt, input.from));
   if (input.to) conditions.push(lte(submissions.createdAt, input.to));
   if (input.search) {
-    // Búsqueda en jsonb data via cast a text (suficiente para inboxes pequeños).
-    conditions.push(sql`${submissions.data}::text ILIKE ${`%${input.search}%`}`);
+    // Búsqueda fuzzy en jsonb data — cross-dialect (PG ::text + ILIKE / MySQL CAST AS CHAR).
+    conditions.push(iLikeJson(submissions.data, `%${input.search}%`));
   }
   if (input.cursor) {
     const cursorDate = new Date(input.cursor.createdAt);

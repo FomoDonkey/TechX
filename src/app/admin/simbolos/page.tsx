@@ -8,7 +8,7 @@ import { requireWorkspace } from "@/lib/workspace";
 import { Component, Plus } from "lucide-react";
 import Link from "next/link";
 
-export const metadata = { title: "Símbolos · CSM" };
+export const metadata = { title: "Símbolos · techx" };
 
 export default async function SymbolsPage() {
   const ctx = await requireWorkspace("editor");

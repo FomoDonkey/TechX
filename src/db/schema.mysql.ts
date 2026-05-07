@@ -75,14 +75,24 @@ import {
 // CUSTOM TYPES
 // ============================================================
 /**
- * Vector embedding column. Renderiza `VECTOR(N)` (MySQL 9.0+ built-in).
- * En MySQL 8.4 (sin VECTOR) el migrador puede degradar a `VARBINARY(8192)` y
- * el código route hacia Qdrant via `src/search/vector/qdrant.ts` (ADR-007).
+ * Vector embedding column.
  *
- * Tipo de dato JS: `number[]` (alineado con pgvector). El driver MySQL recibe
- * y devuelve el vector como string separado por comas; se delega la conversión
- * al adapter porque drizzle no soporta nativamente VECTOR aún.
+ *  - MySQL 9.0+ → `VECTOR(N)` nativo (default).
+ *  - MySQL 8.x  → fallback a `VARBINARY(8192)` activando la env var
+ *    `MYSQL_VECTOR_FALLBACK=true`. La búsqueda semántica nativa queda
+ *    deshabilitada (la query layer enruta a Qdrant si está configurado;
+ *    en otro caso, se deshabilita la feature gracefully).
+ *
+ * Por qué env var y no detección runtime: `drizzle-kit push` evalúa el
+ * schema en build, no tiene conexión a la BD para hacer `SELECT VERSION()`.
+ * El operador del despliegue declara explícitamente qué BD tiene.
+ *
+ * Tipo de dato JS: `number[]` (alineado con pgvector). El driver MySQL
+ * recibe y devuelve el vector como string separado por comas; se delega
+ * la conversión al adapter porque drizzle no soporta nativamente VECTOR aún.
  */
+const VECTOR_FALLBACK = process.env.MYSQL_VECTOR_FALLBACK === "true";
+
 const vector = customType<{
   data: number[];
   driverData: string;
@@ -90,6 +100,11 @@ const vector = customType<{
   configRequired: true;
 }>({
   dataType(config) {
+    if (VECTOR_FALLBACK) {
+      // 8192 bytes = 2048 floats × 4 bytes — cubre 1536d de OpenAI/Voyage.
+      // Con dimensiones mayores hay que subirlo (o switchear a Qdrant).
+      return "VARBINARY(8192)";
+    }
     return `VECTOR(${config.dimensions})`;
   },
   toDriver(value: number[]): string {
@@ -2424,6 +2439,50 @@ export const aiProviderConfigs = mysqlTable(
 );
 
 // ============================================================
+// F11a — Slug history (redirects 301 al renombrar el subdominio)
+// ============================================================
+export const workspaceSlugHistory = mysqlTable(
+  "workspace_slug_history",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    workspaceId: varchar("workspace_id", { length: 36 })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    oldSlug: varchar("old_slug", { length: 100 }).notNull(),
+    changedAt: timestamp("changed_at", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+    expiresAt: timestamp("expires_at", { fsp: 3 }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("workspace_slug_history_old_slug_idx").on(t.oldSlug),
+    index("workspace_slug_history_ws_idx").on(t.workspaceId),
+    index("workspace_slug_history_expires_idx").on(t.expiresAt),
+  ],
+);
+
+// ============================================================
+// F11a — Custom domain verification state
+// ============================================================
+export const workspaceDomains = mysqlTable(
+  "workspace_domains",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    workspaceId: varchar("workspace_id", { length: 36 })
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    domain: varchar("domain", { length: 255 }).notNull().unique(),
+    verifyToken: varchar("verify_token", { length: 64 }).notNull(),
+    verifiedAt: timestamp("verified_at", { fsp: 3 }),
+    lastCheckedAt: timestamp("last_checked_at", { fsp: 3 }),
+    lastCheckError: varchar("last_check_error", { length: 500 }),
+    createdAt: timestamp("created_at", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+  },
+  (t) => [
+    uniqueIndex("workspace_domains_domain_idx").on(t.domain),
+    index("workspace_domains_ws_idx").on(t.workspaceId),
+  ],
+);
+
+// ============================================================
 // Type exports — IDÉNTICOS lógicamente a schema.pg.ts.
 // El barrel `src/db/schema.ts` siempre re-exporta de schema.pg.ts; estos
 // exports se cargan en runtime cuando dialect=mysql.
@@ -2633,3 +2692,9 @@ export type NewEditorialReaction = typeof editorialReactions.$inferInsert;
 // AI provider config
 export type AiProviderConfig = typeof aiProviderConfigs.$inferSelect;
 export type NewAiProviderConfig = typeof aiProviderConfigs.$inferInsert;
+
+// F11a — Domain & slug history
+export type WorkspaceSlugHistory = typeof workspaceSlugHistory.$inferSelect;
+export type NewWorkspaceSlugHistory = typeof workspaceSlugHistory.$inferInsert;
+export type WorkspaceDomain = typeof workspaceDomains.$inferSelect;
+export type NewWorkspaceDomain = typeof workspaceDomains.$inferInsert;

@@ -14,7 +14,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ModerationForm } from "./client";
 
-export const metadata: Metadata = { title: "Moderación · CSM" };
+export const metadata: Metadata = { title: "Moderación · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function ModeracionPage() {

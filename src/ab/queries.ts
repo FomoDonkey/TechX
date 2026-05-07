@@ -6,7 +6,7 @@ import "server-only";
 
 import type { AbVariant } from "@/ab/types";
 import { db } from "@/db/client";
-import { deleteReturningCount, insertReturning } from "@/db/dialect";
+import { dateTrunc, deleteReturningCount, insertReturning } from "@/db/dialect";
 import { abAssignments, abEvents, abTests } from "@/db/schema";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 
@@ -208,9 +208,10 @@ export async function recentAbEventCounts(
 ): Promise<Array<{ hour: string; impressions: number; conversions: number }>> {
   if (!db) return [];
   const sinceMs = Date.now() - hours * 60 * 60 * 1000;
+  const hourBucket = dateTrunc("hour", abEvents.createdAt);
   const rows = await db
     .select({
-      hour: sql<string>`date_trunc('hour', ${abEvents.createdAt})::text`,
+      hour: hourBucket,
       kind: abEvents.kind,
       c: count(),
     })
@@ -222,14 +223,16 @@ export async function recentAbEventCounts(
         sql`${abEvents.createdAt} >= ${new Date(sinceMs).toISOString()}`,
       ),
     )
-    .groupBy(sql`hour`, abEvents.kind)
-    .orderBy(sql`hour asc`);
+    .groupBy(hourBucket, abEvents.kind)
+    .orderBy(hourBucket);
   const map = new Map<string, { hour: string; impressions: number; conversions: number }>();
   for (const r of rows) {
-    const cur = map.get(r.hour) ?? { hour: r.hour, impressions: 0, conversions: 0 };
+    // El bucket viene como Date (PG) o string (MySQL DATE_FORMAT) — normalizamos a ISO.
+    const hourKey = r.hour instanceof Date ? r.hour.toISOString() : String(r.hour);
+    const cur = map.get(hourKey) ?? { hour: hourKey, impressions: 0, conversions: 0 };
     if (r.kind === "impression") cur.impressions = r.c;
     else if (r.kind === "conversion") cur.conversions = r.c;
-    map.set(r.hour, cur);
+    map.set(hourKey, cur);
   }
   return Array.from(map.values());
 }

@@ -46,3 +46,22 @@ export function ciContains(column: SQL.Aliased | SQL | unknown, term: string): S
   }
   return sql`LOWER(${column}) LIKE LOWER(${pattern})`;
 }
+
+/**
+ * Búsqueda fuzzy case-insensitive sobre columnas JSON/JSONB.
+ *
+ * Postgres: `${col}::text ILIKE ${pattern}` — el cast a text serializa el
+ * JSON entero y permite buscar substrings.
+ * MySQL: `LOWER(CAST(${col} AS CHAR)) LIKE LOWER(${pattern})` — `CAST AS
+ * CHAR` produce la representación JSON-formateada como string. Suficiente
+ * para inboxes pequeños / búsqueda admin (no es un FTS).
+ *
+ * `pattern` debe incluir wildcards (`%foo%`). Para escape automático,
+ * usa `ciContainsJson` análogo a `ciContains`.
+ */
+export function iLikeJson(column: SQL.Aliased | SQL | unknown, pattern: string): SQL {
+  if (dialect === "postgres") {
+    return sql`${column}::text ILIKE ${pattern}`;
+  }
+  return sql`LOWER(CAST(${column} AS CHAR)) LIKE LOWER(${pattern})`;
+}

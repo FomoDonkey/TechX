@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { db } from "@/db/client";
+import { countInt } from "@/db/dialect";
 import { subscribers as subsT } from "@/db/schema";
 import { requireWorkspace } from "@/lib/workspace";
 import { listSubscribers } from "@/newsletter/subscribers";
@@ -8,7 +9,7 @@ import { Mailbox } from "lucide-react";
 import type { Metadata } from "next";
 import { SubscribersClient } from "./client";
 
-export const metadata: Metadata = { title: "Suscriptores · CSM" };
+export const metadata: Metadata = { title: "Suscriptores · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function SubscribersPage(props: {
@@ -38,7 +39,7 @@ export default async function SubscribersPage(props: {
   const [counts] = db
     ? await db
         .select({
-          total: sql<number>`count(*)::int`,
+          total: countInt(),
           active: sql<number>`count(*) filter (where ${subsT.status} = 'active' and ${subsT.confirmedAt} is not null)::int`,
           pending: sql<number>`count(*) filter (where ${subsT.status} = 'active' and ${subsT.confirmedAt} is null)::int`,
           unsubscribed: sql<number>`count(*) filter (where ${subsT.status} = 'unsubscribed')::int`,

@@ -20,8 +20,8 @@ import {
 const features = [
   {
     icon: Sparkles,
-    title: "Editor Notion-like",
-    desc: "Slash commands, bloques, drag, embeds, callouts, columnas, tablas, código con Shiki, diagramas Excalidraw.",
+    title: "Editor de bloques",
+    desc: "Slash commands, drag handles, embeds inteligentes, callouts, columnas, tablas anidadas, code blocks con resaltado de sintaxis y diagramas embebidos.",
   },
   {
     icon: Brain,
@@ -31,17 +31,17 @@ const features = [
   {
     icon: Boxes,
     title: "Page Builder visual",
-    desc: "Drag-drop estilo Framer con breakpoints, snap a grid, hover states, click-to-edit y Symbols reusables.",
+    desc: "Drag-drop con breakpoints, snap a grid, hover states, click-to-edit y Symbols reusables. El sitio que ves es el sitio que sirves.",
   },
   {
     icon: Search,
     title: "Búsqueda semántica",
-    desc: "pgvector + FTS híbrido (BM25 + cosine). Ask CSM chat RAG sobre tu propio contenido. Smart internal linking.",
+    desc: "pgvector + FTS híbrido (BM25 + cosine). Chat RAG sobre tu propio contenido. Sugerencia de enlaces internos al guardar.",
   },
   {
     icon: ImageIcon,
     title: "Asset DAM con IA",
-    desc: "Background removal, AI image gen (Flux), tags automáticos, smart focal crop, blurhash, AVIF/WebP responsive.",
+    desc: "Background removal, generación de imagen, tags automáticos, smart focal crop, blurhash, AVIF/WebP responsive servidos al instante.",
   },
   {
     icon: Globe2,
@@ -51,47 +51,47 @@ const features = [
   {
     icon: Mail,
     title: "Newsletter + Memberships",
-    desc: "Suscriptores, segmentos, campañas, drip. Stripe paywall por bloque (no toda la página). Tipo Substack.",
+    desc: "Suscriptores, segmentos, campañas, drip. Stripe paywall por bloque (no toda la página). Doble opt-in.",
   },
   {
     icon: Workflow,
     title: "Workflows & Automations",
-    desc: "Draft → review → published con asignaciones. Webhooks firmados. Automations Zapier-light. A/B testing nativo.",
+    desc: "Draft → review → published con asignaciones. Webhooks firmados HMAC. Automations con triggers/condiciones/acciones. A/B testing nativo.",
   },
   {
     icon: GitBranch,
     title: "Branching de contenido",
-    desc: "Ramas tipo Git para preparar releases editoriales. Merge con diff visual estilo Google Docs. Revertir.",
+    desc: "Ramas tipo Git para preparar releases editoriales. Merge con diff visual. Revertir con un click. Preview por rama con URL firmada.",
   },
   {
     icon: Code2,
     title: "Headless first",
-    desc: "REST + GraphQL + OpenAPI auto-generado. SDK TypeScript tipado. CLI csm para scaffold de proyectos.",
+    desc: "REST + GraphQL + OpenAPI auto-generado. SDK TypeScript tipado. CLI propia para scaffolding de proyectos consumidores.",
   },
   {
     icon: Users,
     title: "Realtime collab self-hosted",
-    desc: "Y.js + cursores remotos + presence en TODO el admin (no solo el editor). Hot Right Now widget. Following mode. Reactions live en comentarios. Sin Hocuspocus extra.",
+    desc: "Y.js + cursores remotos + presence en todo el admin. Hot Right Now widget. Following mode. Reactions live en comentarios. Sobre tu Postgres.",
   },
   {
     icon: Plug,
     title: "MCP Server nativo",
-    desc: "14 tools expuestas a Claude Desktop, Cursor, VS Code y agentes externos. Stdio + Streamable HTTP. CLI csm mcp install detecta y configura el cliente automáticamente.",
+    desc: "Tools expuestas a agentes IA externos vía Stdio + Streamable HTTP. CLI que detecta el cliente y configura solo. Auth por API key con scopes.",
   },
   {
     icon: Bot,
-    title: "Agente IA in-product",
-    desc: "Chat conversacional dentro del admin con tool-use loop Anthropic puro. Reusa los 14 tools del MCP server. Auditoría apunta al user real.",
+    title: "Builder + Agente in-product",
+    desc: "Construye tu sitio desde un prompt y sigue iterando con chat. Agente conversacional para refinar contenido. Audit log apunta al humano detrás.",
   },
   {
     icon: Heart,
     title: "Content Health Scan",
-    desc: "Cron weekly que escanea SEO, alt-text, jerarquía de headings, contenido fino, fechas obsoletas. Score 0-100 transparente. Único en CMS open-source.",
+    desc: "Cron weekly que escanea SEO, alt-text, jerarquía de headings, contenido fino, fechas obsoletas. Score 0-100 transparente con issues accionables.",
   },
   {
     icon: ShieldCheck,
     title: "Confianza enterprise",
-    desc: "2FA TOTP + Passkeys WebAuthn. GDPR export ZIP completo. CSP estricta + Reporting API. BotID. AI cost cap. Audit log. OWASP top-10 audit clean.",
+    desc: "2FA TOTP + Passkeys WebAuthn. GDPR export ZIP completo. CSP estricta + Reporting API. AI cost cap. Audit log. OWASP top-10 audit clean.",
   },
 ];
 
@@ -104,7 +104,7 @@ export function Features() {
           <span className="gradient-text">no esperabas</span>.
         </h2>
         <p className="mt-4 text-balance text-lg text-muted-foreground">
-          50 razones para olvidarte de WordPress. Aquí van 12.
+          15 capacidades que convierten tu CMS en una plataforma editorial completa.
         </p>
       </div>
 

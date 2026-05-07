@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/auth/server";
-import { db } from "@/db/client";
+import { db, dialect } from "@/db/client";
 import { invitations, members, users, workspaces } from "@/db/schema";
 import { logActivity } from "@/lib/activity";
 import { WS_COOKIE } from "@/lib/workspace";
@@ -75,15 +75,20 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ to
     .limit(1);
 
   await db.transaction(async (tx) => {
-    await tx
-      .insert(members)
-      .values({
-        workspaceId: row.workspaceId,
-        userId: user.id,
-        role: row.role,
-        invitedBy: row.invitedBy,
-      })
-      .onConflictDoNothing();
+    // Cross-dialect insert-ignore dentro de transaction. No podemos usar
+    // `upsertNothing` (usa `db` global, no `tx`); inline if/else.
+    const memberValues = {
+      workspaceId: row.workspaceId,
+      userId: user.id,
+      role: row.role,
+      invitedBy: row.invitedBy,
+    };
+    if (dialect === "mysql") {
+      // biome-ignore lint/suspicious/noExplicitAny: Drizzle MySQL chain typing
+      await (tx.insert(members).values(memberValues) as any).ignore();
+    } else {
+      await tx.insert(members).values(memberValues).onConflictDoNothing();
+    }
 
     await tx.update(invitations).set({ acceptedAt: new Date() }).where(eq(invitations.id, row.id));
   });

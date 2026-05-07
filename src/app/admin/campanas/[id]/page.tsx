@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CampaignEditor } from "./editor";
 
-export const metadata: Metadata = { title: "Editar campaña · CSM" };
+export const metadata: Metadata = { title: "Editar campaña · techx" };
 export const dynamic = "force-dynamic";
 
 export default async function CampaignEditPage(props: { params: Promise<{ id: string }> }) {

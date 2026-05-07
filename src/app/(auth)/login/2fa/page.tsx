@@ -2,7 +2,7 @@ import { AuthShell } from "@/components/auth/auth-shell";
 import type { Metadata } from "next";
 import { TwoFactorChallengeClient } from "./client";
 
-export const metadata: Metadata = { title: "Verificación 2FA · CSM" };
+export const metadata: Metadata = { title: "Verificación 2FA · techx" };
 
 export default function TwoFactorChallengePage() {
   return (
